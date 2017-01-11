@@ -1,4 +1,4 @@
-var manipulateNodeTool = {
+var manipulateTool = {
 	name: "manipulate",
 	description: "Manipulate the node",
 	section: "foo",
@@ -10,34 +10,35 @@ var manipulateNodeTool = {
 	state: null,
 	state_action: false,
 	circle_center: vec3.create(),
-	node_center: vec3.create(),
+	gizmo_center: vec3.create(),
 	click_pos: vec3.create(),
 
 	//called form ToolsModule
 	renderEditor: function(camera)
 	{
-		var node = SelectionModule.getSelectedNode();
-		if(!node) 
-			return;
 		if(!EditorView.mustRenderGizmos()) 
 			return;
+
+		var selection = SelectionModule.getSelection();
+		if(!selection) 
+			return;
+		var node = selection.node; //could be null
 
 		var gizmo_model = ToolUtils.getSelectionMatrix();
 		if(!gizmo_model)
 			return null;
 
-		//var pos = node.transform.getGlobalPosition( this.node_center );
+		//var pos = node.transform.getGlobalPosition( this.gizmo_center );
 		var pos = vec3.create();
 		mat4.multiplyVec3( pos, gizmo_model, pos );
-		this.node_center.set( pos );
-
+		this.gizmo_center.set( pos );
 
 		//ToolUtils.prepareDrawing();
 		//var camera = ToolUtils.getCamera();
 		var camera2D = ToolUtils.enableCamera2D( camera );
 		var pos2D = camera.project(pos);
 
-		if(pos2D[2] < 0) 
+		if( pos2D[2] < 0 ) 
 			return;
 		pos2D[2] = 0;
 		this.circle_center.set(pos2D);
@@ -46,26 +47,29 @@ var manipulateNodeTool = {
 		gl.disable(gl.DEPTH_TEST);
 		gl.enable(gl.BLEND);
 		gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-		Draw.push();
-		Draw.translate(pos2D);
+		LS.Draw.push();
+		LS.Draw.translate(pos2D);
 
 		var circle_size = this.circle_size;
 
+		var color = (node && node._is_bone) ? [1,0.1,1] : [1,0.6,0.1];
+
 		//center circle
-		Draw.scale(5,5,5);
-		Draw.setColor([0.3,0.8,1.0,0.5]);
-		Draw.renderMesh( EditorView.circle_mesh, gl.TRIANGLES );
+		LS.Draw.scale(5,5,5);
+		LS.Draw.setColor( color );
+		LS.Draw.setAlpha(0.5);
+		LS.Draw.renderMesh( EditorView.debug_render.circle_mesh, gl.TRIANGLES );
 
 		//rotate line
-		Draw.scale(circle_size / 5.0, circle_size / 5.0, circle_size / 5.0);
-		Draw.setColor([1,0.8,0.1,this.state == "rotate" ? 0.6 : 0.3]);
-		Draw.renderMesh( EditorView.circle_empty_mesh, gl.LINE_LOOP );
+		LS.Draw.scale(circle_size / 5.0, circle_size / 5.0, circle_size / 5.0);
+		LS.Draw.setAlpha( this.state == "rotate" ? 0.6 : 0.3 );
+		LS.Draw.renderMesh( EditorView.debug_render.circle_empty_mesh, gl.LINE_LOOP );
 
 		//move circle
-		Draw.setColor([1,0.5,0.1, this.state == "move" ? 0.4 : 0.2]);
-		Draw.scale(0.95,0.95,0.95);
-		Draw.renderMesh( EditorView.circle_mesh, gl.TRIANGLES );
-		Draw.pop();
+		LS.Draw.scale(0.95,0.95,0.95);
+		LS.Draw.setAlpha( this.state == "move" ? 0.4 : 0.2 );
+		LS.Draw.renderMesh( EditorView.debug_render.circle_mesh, gl.TRIANGLES );
+		LS.Draw.pop();
 
 		gl.enable(gl.DEPTH_TEST);
 	},
@@ -77,9 +81,10 @@ var manipulateNodeTool = {
 		if(e.which != GL.LEFT_MOUSE_BUTTON) 
 			return;
 
-		var node = LS.GlobalScene.selected_node;
-		if(!node) 
+		var selection = SelectionModule.getSelection();
+		if(!selection) 
 			return;
+		var node = selection.node; //could be null
 
 		var gizmo_model = ToolUtils.getSelectionMatrix();
 		if(!gizmo_model)
@@ -114,23 +119,26 @@ var manipulateNodeTool = {
 					SelectionModule.setMultipleSelection(instances, false);
 			}
 		}
-		else
+		else if(state) //there is an action performed
 		{
-			if(node._is_bone && node.parentNode && node.parentNode._is_bone && !e.ctrlKey)
-				ToolUtils.saveNodeTransformUndo(node.parentNode);
-			else if(node.transform)
-				ToolUtils.saveNodeTransformUndo(node);
+			if(node)
+			{
+				if(node._is_bone && node.parentNode && node.parentNode._is_bone && !e.ctrlKey)
+					ToolUtils.saveNodeTransformUndo(node.parentNode);
+				else 
+					ToolUtils.saveSelectionTransformUndo();
+			}
 		}
 
 		if(state == "move")
 		{
 			this.state_action = true;
-			ToolUtils.testPerpendicularPlane( e.canvasx, gl.canvas.height - e.canvasy, this.node_center, this.click_pos );
+			ToolUtils.testPerpendicularPlane( e.canvasx, gl.canvas.height - e.canvasy, this.gizmo_center, this.click_pos );
 		}
 		else if(state == "rotate")
 		{
 			this.state_action = true;
-			ToolUtils.testPerpendicularPlane( e.canvasx, gl.canvas.height - e.canvasy, this.node_center, this.click_pos );
+			ToolUtils.testPerpendicularPlane( e.canvasx, gl.canvas.height - e.canvasy, this.gizmo_center, this.click_pos );
 		}
 		else
 			this.state_action = false;
@@ -160,6 +168,8 @@ var manipulateNodeTool = {
 		if(e.dragging && this.state_action && e.which == GL.LEFT_MOUSE_BUTTON)
 			ret = this.onMouseDrag(e);
 
+		EditorModule.updateInspector();
+
 		if(this.state != old)
 			LS.GlobalScene.refresh();
 
@@ -168,23 +178,30 @@ var manipulateNodeTool = {
 
 	mousewheel: function(e)
 	{
-		if(!e.dragging) return;
-		var node = LS.GlobalScene.selected_node;
-		if(!node) return;
+		if(!e.dragging)
+			return;
+
+
+		var selection = SelectionModule.getSelection();
+		if(!selection) 
+			return;
+		var node = selection.node; //could be null
 
 		if(this.state == "move")
 		{
 			var camera = ToolUtils.getCamera(e);
 			var eye = camera.getEye();
-			var delta = vec3.sub(vec3.create(), eye, this.node_center );
+			var delta = vec3.sub(vec3.create(), eye, this.gizmo_center );
 			vec3.scale(delta,delta, (e.wheel < 0 ? 0.02 : -0.02) );
 			var T = mat4.setTranslation( mat4.create(), delta );
-
-			if(node._is_bone && node.parentNode && node.parentNode._is_bone)
+	
+			if( node && node._is_bone && node.parentNode && node.parentNode._is_bone && !e.ctrlKey )
 				ToolUtils.applyTransformMatrixToBone(T);
 			else
 				ToolUtils.applyTransformMatrixToSelection(T);
 
+			ToolUtils.testPerpendicularPlane( e.canvasx, gl.canvas.height - e.canvasy, this.gizmo_center, this.click_pos );
+			EditorModule.updateInspector();
 			LS.GlobalScene.refresh();
 			return true;		
 		}
@@ -192,8 +209,10 @@ var manipulateNodeTool = {
 
 	onMouseDrag: function(e)
 	{
-		var node = LS.GlobalScene.selected_node;
-		if(!node) return;
+		var selection = SelectionModule.getSelection();
+		if(!selection) 
+			return;
+		var node = selection.node; //could be null
 
 		var gizmo_model = ToolUtils.getSelectionMatrix();
 		if(!gizmo_model)
@@ -211,7 +230,7 @@ var manipulateNodeTool = {
 			var T = mat4.create();
 			mat4.translate(T,T,delta);
 
-			if(node._is_bone && node.parentNode && node.parentNode._is_bone && !e.ctrlKey)
+			if(node && node._is_bone && node.parentNode && node.parentNode._is_bone && !e.ctrlKey)
 				ToolUtils.applyTransformMatrixToBone(T);
 			else
 				ToolUtils.applyTransformMatrixToSelection(T);
@@ -221,13 +240,13 @@ var manipulateNodeTool = {
 		{
 			var camera = ToolUtils.getCamera(e);
 			var result = vec3.create();
-			ToolUtils.testPerpendicularPlane( e.canvasx, gl.canvas.height - e.canvasy, this.node_center, result );
-			var A = vec3.sub( vec3.create(), this.click_pos, this.node_center );
-			var B = vec3.sub( vec3.create(), result, this.node_center );
+			ToolUtils.testPerpendicularPlane( e.canvasx, gl.canvas.height - e.canvasy, this.gizmo_center, result );
+			var A = vec3.sub( vec3.create(), this.click_pos, this.gizmo_center );
+			var B = vec3.sub( vec3.create(), result, this.gizmo_center );
 			this.click_pos.set( result );
 			vec3.normalize(A,A);
 			vec3.normalize(B,B);
-			//var axis = vec3.sub( vec3.create(), this.node_center, camera.getEye() );
+			//var axis = vec3.sub( vec3.create(), this.gizmo_center, camera.getEye() );
 			var axis = vec3.cross( result, A,B );
 			var angle = -Math.acos( Math.clamp( vec3.dot(A,B), -1,1) );
 			//var angle = vec2.computeSignedAngle(A,B);
@@ -241,7 +260,7 @@ var manipulateNodeTool = {
 				vec3.normalize(axis,axis);
 				mat4.rotate( R, R, angle, axis );
 
-				ToolUtils.applyTransformMatrixToSelection( R, this.node_center );
+				ToolUtils.applyTransformMatrixToSelection( R, this.gizmo_center );
 			}
 		}
 
@@ -261,7 +280,8 @@ var manipulateNodeTool = {
 
 	updateCursor: function()
 	{
-		if(!LS.GlobalScene.selected_node)
+		var selection = SelectionModule.getSelection();
+		if(!selection)
 		{
 			gl.canvas.style.cursor = null;
 			return;
@@ -275,5 +295,6 @@ var manipulateNodeTool = {
 			gl.canvas.style.cursor = null;
 	}
 };
-ToolsModule.registerTool(manipulateNodeTool);
+
+ToolsModule.registerTool(manipulateTool);
 

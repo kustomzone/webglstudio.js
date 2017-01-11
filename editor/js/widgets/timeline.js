@@ -1,13 +1,17 @@
-function Timeline()
+function Timeline( options )
 {
+	this.root = null;
+
 	this.canvas_info = {
 		timeline_height: 30,
 		row_height: 20
 	};
 
-	this.mode = "keyframes";
+	this.mode = "keyframes"; //values, clips...
 	this.preview = true;
 	this.paths_widget = false;
+	this.autoresize = true;
+	this.show_paths = true;
 
 	this.current_take = null;
 
@@ -18,8 +22,27 @@ function Timeline()
 	LEvent.bind( LS.GlobalScene, "change", this.onReload, this );
 	//LEvent.bind( LS.GlobalScene, "reload", this.onReload, this );
 
-	this.createInterface();
+	this.createInterface( options );
+	LiteGUI.createDropArea( this.canvas, this.onItemDrop.bind(this) );
 	//this.onNewAnimation();
+}
+
+Timeline.widget_name = "Timeline";
+Timeline.interpolation_values = {"none": LS.NONE, "linear": LS.LINEAR, "bezier": LS.BEZIER }
+
+CORE.registerWidget( Timeline );
+
+Timeline.createDialog = function( parent )
+{
+	var dialog = new LiteGUI.Dialog( null, { title: Timeline.widget_name, fullcontent: true, closable: true, draggable: true, detachable: true, minimize: true, resizable: true, parent: parent, width: 900, height: 500 });
+	var widget = new Timeline();
+	dialog.add( widget );
+	dialog.widget = widget;
+	dialog.on_close = function()
+	{
+		//widget.unbindEvents();		
+	}
+	return dialog;
 }
 
 Timeline.prototype.destroy = function()
@@ -30,18 +53,26 @@ Timeline.prototype.destroy = function()
 
 Timeline.DEFAULT_DURATION = 20; //in seconds
 
-Timeline.prototype.createInterface = function()
+Timeline.prototype.createInterface = function( options )
 {
+	options = options || {};
+
 	var that = this;
 
 	this.root = document.createElement("div");
 	this.root.className = "timeline";
 
+	if(options.id)
+		this.root.id = options.id;
+
 	//add tool bar
 	var widgets = this.top_widgets = new LiteGUI.Inspector( null, { height: 30, widgets_width: 140, name_width: 60, one_line: true } );
 	this.root.appendChild( widgets.root );
+	this.root.style.backgroundColor = "#2a2a2a";
+	widgets.root.style.paddingTop = "4px";
 
-	widgets.addButtons(null,["New","Load","Scene"], function(v) { 
+	widgets.addButton(null,"Options", { width: 80, callback: function(v,e){ that.showOptionsContextMenu(e); } });
+	/*
 		if(v == "New")
 		{
 			that.showNewAnimationDialog();
@@ -52,24 +83,31 @@ Timeline.prototype.createInterface = function()
 		else if(v == "Scene")
 			that.onSceneAnimation();
 	});
+	*/
 	var that = this;
 	this.animation_widget = widgets.addString(null, "", { disabled: true } );
+	this.take_widget = widgets.addCombo("Take", "", { values:{}, name_width: 50, content_width: 150, width: 200, callback: function(v){
+		that.setAnimation( that.current_animation, v );
+	}});
+	widgets.addButton(null, LiteGUI.special_codes.navicon, { width: 30, callback: function(v,e){ that.showTakeOptionsDialog(e); } });
 	this.duration_widget = widgets.addNumber("Duration", 0, { units:"s", precision:2, min:0, callback: function(v){ that.setDuration(v); } } );
 	this.current_time_widget = widgets.addNumber("Current", this.session ? this.session.current_time : 0, { units:"s", precision:2, min: 0, callback: function(v){ that.setCurrentTime(v); } } );
 	//widgets.addCheckbox("Preview", this.preview, { callback: function(v){ that.preview = v; } } );
 	//this.play_widget = widgets.addCheckbox("Play", !!this.playing, { callback: function(v){ that.playing = !that.playing ; } } );
-	widgets.addIcon(null, !!this.preview, { image: "imgs/icons-timeline.png", index: 6, title:"preview",  callback: function(v){ that.preview = !that.preview ; } } );
+	this.preview_widget = widgets.addIcon(null, !!this.preview, { image: "imgs/icons-timeline.png", index: 6, title:"preview",  callback: function(v){ that.preview = !that.preview ; } } );
 	this.play_widget = widgets.addIcon(null, !!this.playing, { title:"play", image: "imgs/icons-timeline.png",  callback: function(v){ that.playing = !that.playing ; } } );
 	widgets.addIcon(null, false, { title:"zoom in", image: "imgs/icons-timeline.png", index: 8, toggle: false, callback: function(v){ that.zoom(1.05); 	that.redrawCanvas(); } } );
 	widgets.addIcon(null, false, { title:"zoom out", image: "imgs/icons-timeline.png", index: 7, toggle: false, callback: function(v){ that.zoom(0.95); that.redrawCanvas(); } } );
 	widgets.addIcon(null, false, { title:"previous keyframe", image: "imgs/icons-timeline.png", index: 2, toggle: false, callback: function(v){ that.prevKeyframe(); } } );
 	widgets.addIcon(null, false, { title:"next keyframe", image: "imgs/icons-timeline.png", index: 3, toggle: false, callback: function(v){ that.nextKeyframe(); } } );
-	//this.paths_widget = widgets.addCheckbox("Show Paths", !!this.show_paths, { callback: function(v){ that.show_paths = !that.show_paths ; } } );
+	widgets.addIcon(null, false, { title:"record", image: "imgs/icons-timeline.png", index: 10, toggle: true, callback: function(v){ return that.toggleRecording(v); } } );
+	this.paths_widget = widgets.addIcon(null, this.show_paths, { title:"show paths", image: "imgs/icons-timeline.png", index: 12, toggle: true, callback: function(v){ RenderModule.requestFrame(); return that.show_paths = v; } } );
 	//widgets.addCheckbox("Curves", this.mode == "curves", { callback: function(v){ that.mode = v ? "curves" : "keyframes"; that.redrawCanvas(); } } );
 
+	/*
 	this.property_widget = widgets.addString("Property", "", { disabled: true, width: "auto" } );
 	this.property_widget.style.marginLeft = "10px";
-	this.interpolation_widget = widgets.addCombo("Interpolation", "none", { values: {"none": LS.NONE, "linear": LS.LINEAR, "bezier": LS.BEZIER }, width: 200, callback: function(v){ 
+	this.interpolation_widget = widgets.addCombo("Interpolation", "none", { values: Timeline.interpolation_values, width: 200, callback: function(v){ 
 		if( !that.current_track || that.current_track.interpolation == v )
 			return;
 		if( that.current_track.isInterpolable() )
@@ -78,6 +116,7 @@ Timeline.prototype.createInterface = function()
 			that.animationModified();
 		}
 	}});
+	*/
 
 	//work area
 	var area = new LiteGUI.Area(null,{ height: "calc( 100% - 34px )", autoresize: true, inmediateResize: true });
@@ -132,12 +171,14 @@ Timeline.prototype.animationModified = function()
 
 	this.current_animation._modified = true;
 	LS.ResourcesManager.resourceModified( this.current_animation );
+	LS.GlobalScene.refresh();
+	this.redrawCanvas();
 }
 
 Timeline.prototype.onLoadAnimation = function()
 {
 	var that = this;
-	EditorModule.showSelectResource("animation", inner.bind(this) );
+	EditorModule.showSelectResource( { type:"animation", on_complete: inner.bind(this) } );
 
 	function inner( name )
 	{
@@ -160,42 +201,56 @@ Timeline.prototype.onLoadAnimation = function()
 			console.warn("Resource must be Animation");
 		return;
 
+		/*
 		LS.ResourcesManager.load( name, function(url, resource) {
 			console.log( url, resource );
 		});
+		*/
 	}
 }
 
 Timeline.prototype.onSceneAnimation = function()
 {
 	if(!LS.GlobalScene.animation)
-	{
-		LS.GlobalScene.animation = new LS.Animation();
-		LS.GlobalScene.animation.name = "@scene";
-		var take = LS.GlobalScene.animation.createTake( "default", Timeline.DEFAULT_DURATION );
-	}
-
+		LS.GlobalScene.createAnimation();
 	this.setAnimation( LS.GlobalScene.animation );
 }
 
 Timeline.prototype.setAnimation = function( animation, take_name )
 {
-	if(this.current_animation == animation)
+	take_name = take_name || "default";
+
+	if(this.current_animation == animation && this.current_take_name == take_name )
+	{
+		if(animation)
+		{
+			var takes = [];
+			for(var i in animation.takes)
+				takes.push(i);
+			this.take_widget.setOptionValues( takes, take_name );
+		}
 		return;
+	}
 
 	if(!animation)
 	{
 		this.current_animation = null;
 		this.current_take = null;
+		this.current_take_name = "";
 		this.animation_widget.setValue( "" );
+		this.take_widget.setValue("");
+		this.take_widget.setOptionValues([]);
 		this.duration_widget.setValue( 0 );
 		this.session = null;
 		this.redrawCanvas();
 		return;
 	}
 
+	if( !animation.getNumTakes() || !animation.takes[take_name] )
+		animation.createTake( take_name, LS.Animation.DEFAULT_DURATION );
+
 	this.session = {
-		start_time: 0, //time at left side of window
+		start_time: -0.2, //time at left side of window (use a negative number to leave some margin)
 		current_time: 0,
 		last_time: 0,
 		seconds_to_pixels: 50, //how many pixels represent one second
@@ -208,11 +263,17 @@ Timeline.prototype.setAnimation = function( animation, take_name )
 
 	this.current_animation = animation;
 	this.animation_widget.setValue( animation.name );
-	this.current_take = animation.getTake( take_name || "default" );
+	this.current_take_name = take_name;
+	this.current_take = animation.getTake( this.current_take_name );
+	this.take_widget.setValue( this.current_take_name );
+	var takes = [];
+	for(var i in this.current_animation.takes)
+		takes.push(i);
+	this.take_widget.setOptionValues( takes, take_name );
 	this.duration_widget.setValue( this.current_take.duration );
 
 	//to ensure data gets saved again
-	LS.ResourcesManager.resourceModified( animation );
+	//LS.ResourcesManager.resourceModified( animation ); //disabled or just by watching an animation I need to send it again
 
 	//unpack all
 	if(0)
@@ -226,7 +287,12 @@ Timeline.prototype.setAnimation = function( animation, take_name )
 	this.redrawCanvas();
 }
 
-Timeline.prototype.resize = function()
+Timeline.prototype.onResize = function()
+{
+	this.resize();
+}
+
+Timeline.prototype.resize = function( skip_redraw )
 {
 	//console.log("timeline resize");
 	var canvas = this.canvas;
@@ -245,8 +311,24 @@ Timeline.prototype.resize = function()
 
 	canvas.width = rect.width;
 	canvas.height = rect.height;
-	this.redrawCanvas();
+
+	if(!skip_redraw)
+		this.redrawCanvas();
 }
+
+/*
+Timeline.prototype.resize = function()
+{
+	var w = this.canvas.parentNode.offsetWidth;
+	var h = this.canvas.parentNode.offsetHeight;
+	if(this.canvas.width != w || this.canvas.height != h)
+	{
+		this.canvas.width = w;
+		this.canvas.height = h;
+		this._must_redraw = true;
+	}
+}
+*/
 
 //globals used for rendering and interaction
 Timeline.prototype.updateTimelineData = function()
@@ -318,6 +400,9 @@ Timeline.prototype.redrawCanvas = function()
 	//show timeline
 	var timeline_height = this.canvas_info.timeline_height;
 	var margin = this.session.left_margin;
+
+	ctx.fillStyle = "#111";
+	ctx.fillRect( margin,0, canvas.width, timeline_height );
 
 	if(data.seconds_to_pixels > 100 )
 	{
@@ -413,6 +498,13 @@ Timeline.prototype.redrawCanvas = function()
 	//tracks property info
 	ctx.textAlign = "left";
 
+	ctx.save();
+	ctx.rect(0,0, this.session.left_margin, canvas.height );
+	ctx.clip();
+
+	ctx.font = "12px Tahoma";
+
+	//render left side
 	for(var i = 0; i < data.total_tracks; i++)
 	{
 		var track = take.tracks[ data.first_track + i ];
@@ -432,9 +524,10 @@ Timeline.prototype.redrawCanvas = function()
 			ctx.fillRect( 16.5, y + 6.5, line_height - 12, line_height - 12 );
 		}
 
-		var main_word = "";
-		var secondary_word = "";
+		var main_word = track.name;
+		var secondary_word = track.type + (track.packed_data ? "*" : "");
 
+		/*
 		if(track._property_path[0][0] != "@" || track._target && track._target._root )
 		{
 			main_word = track._property_path[0][0] != "@" ? track._property_path[0] : track._target._root.name;
@@ -445,9 +538,9 @@ Timeline.prototype.redrawCanvas = function()
 			main_word = track.name;
 			secondary_word = track.type + (track.packed_data ? "*" : "");
 		}
+		*/
 
 		ctx.globalAlpha = track.enabled ? 1 : 0.5;
-		ctx.font = "12px Arial";
 		ctx.fillStyle = "rgba(255,255,255,0.6)";
 		ctx.fillText( main_word , 28.5, Math.floor(y + line_height * 0.8) - 0.5 );
 		var info = ctx.measureText( main_word );
@@ -457,6 +550,17 @@ Timeline.prototype.redrawCanvas = function()
 		ctx.globalAlpha = 1;
 	}
 
+	ctx.restore();
+
+	ctx.save();
+
+	//clip right side, disabled, very slow!
+	//ctx.rect( this.session.left_margin, 0, canvas.width - this.session.left_margin, canvas.height );
+	//ctx.clip(); 
+
+	var timeline_keyframe_lines = [];
+
+	//render right side
 	if( this.mode == "keyframes" )
 	{
 		//keyframes
@@ -484,21 +588,28 @@ Timeline.prototype.redrawCanvas = function()
 					ctx.fillStyle = "#FC6";
 				else
 					ctx.fillStyle = "#9AF";
+				ctx.strokeStyle = ctx.fillStyle;
 
 				var posx = this.canvasTimeToX( keyframe[0] );
 
-				if(1) //diamonds
+				if( track.type != "events" ) //diamonds
 				{
 					if( (posx + 5) < margin)
 						continue;
 
 					ctx.save();
-					ctx.translate( posx, y + line_height * 0.5 );
+					var offset_y = y + line_height * 0.5;
+
+					//mini line
+					if(track.enabled)
+						timeline_keyframe_lines.push( posx );
+
+					//keyframe
 					ctx.beginPath();
-					ctx.moveTo(0,5);
-					ctx.lineTo(5,0);
-					ctx.lineTo(0,-5);
-					ctx.lineTo(-5,0);
+					ctx.moveTo( posx, offset_y + 5);
+					ctx.lineTo( posx + 5, offset_y);
+					ctx.lineTo( posx, offset_y - 5);
+					ctx.lineTo( posx - 5, offset_y );
 					ctx.fill();
 					ctx.restore();
 				}
@@ -512,7 +623,7 @@ Timeline.prototype.redrawCanvas = function()
 						w -= margin - posx;
 						posx = margin;
 					}
-					ctx.fillRect( posx, y + 2, w - 1, line_height - 4);
+					ctx.fillRect( posx - 4, y + 2, w - 1, line_height - 4);
 				}
 			}
 
@@ -520,7 +631,7 @@ Timeline.prototype.redrawCanvas = function()
 		}
 
 	}
-	else if( this.mode == "curves" )
+	else if( this.mode == "curves" ) //not working yet
 	{
 		//keyframes
 		var keyframe_time = 1/this.framerate; //how many seconds last every tick (line in timeline)
@@ -597,7 +708,27 @@ Timeline.prototype.redrawCanvas = function()
 		}
 	}
 
-	//time marker line
+	//timeline keyframe vertical lines
+	ctx.globalAlpha = 0.5;
+	ctx.beginPath();
+	timeline_keyframe_lines.sort(); //avoid repeating
+	var last = -1;
+	for(var i = 0; i < timeline_keyframe_lines.length; ++i)
+	{
+		var posx = timeline_keyframe_lines[i];
+		if(posx == last)
+			continue;
+		ctx.moveTo( posx + 0.5, 14);
+		ctx.lineTo( posx + 0.5, timeline_height);
+		last = posx;
+	}
+	ctx.stroke();
+	ctx.globalAlpha = 1;
+
+	ctx.restore();
+
+
+	//current time marker vertical line
 	var pos = Math.round( this.canvasTimeToX( current_time ) ) + 0.5;
 	if(pos >= margin)
 	{
@@ -643,30 +774,76 @@ Timeline.prototype.redrawCanvas = function()
 
 Timeline.prototype.setCurrentTime = function( time, skip_redraw )
 {
+	//if(!this.session) return;
+
 	var duration = this.current_take ? this.current_take.duration : 0;
 	if(time < 0)
 		time = 0;
 
-	//time = Math.round(time * 30) / 30;
+	//time = Math.round(time * this.framerate ) / this.framerate;
 	time = Math.clamp( time, 0, duration );
 
 	if(time == this.session.current_time)
 		return;
 
-	this.session.current_time = time;
-	this.current_time_widget.setValue( time );
+	//console.log( time );
+	var t = this.session.current_time;
 
+	this.session.current_time = time;
+	this.current_time_widget.setValue( time, true );
+
+	//console.log( t, this.session.current_time );
+
+	//auto scroll when the cursor exits
+	if( this._timeline_data && time > this._timeline_data.end_time ) 
+		this.session.start_time += this._timeline_data.end_time;
+
+	//redraw only if visible
 	if(!skip_redraw && this.canvas.offsetParent !== null)
 		this.redrawCanvas();
 
+	//preview: apply track samples to scene
 	if(this.preview && this.current_take)
 	{
-		this.current_take.applyTracks( this.session.current_time, this.session.last_time );
+		//recording is special case
+		if(this.recording && this._recording_time >= 0)
+		{
+			//apply tracks and store last value to check if we need to create keyframe
+			for(var i = 0; i < this.current_take.tracks.length; ++i)
+			{
+				var track = this.current_take.tracks[i];
+				if(!track.enabled || !track.data)
+					continue;
+				var sample = track.getSample( time );
+				if( sample !== undefined )
+				{
+					track._target = LS.GlobalScene.setPropertyValueFromPath( track._property_path, sample, 0 );
+					track._last_sample = sample; //store last value
+				}
+			}
+		}
+		else
+			this.current_take.applyTracks( this.session.current_time, this.session.last_time );
+
 		this.session.last_time = this.session.current_time;
 		LS.GlobalScene.refresh();
 	}
 }
 
+Timeline.prototype.applyPreview = function()
+{
+	if(this.current_take && this.preview )
+		this.current_take.applyTracks( this.session.current_time, this.session.last_time );
+}
+
+Timeline.prototype.applyTracks = function( force )
+{
+	if(!this.current_take)
+		return;
+
+	if(this.preview || force)
+		this.current_take.applyTracks( this.session.current_time, this.session.last_time );
+}
 
 Timeline.prototype.setDuration = function( time, skip_redraw  )
 {
@@ -689,13 +866,14 @@ Timeline.prototype.setDuration = function( time, skip_redraw  )
 		this.redrawCanvas();
 }
 
+/*
 Timeline.prototype.showPropertyInfo = function( track )
 {
 	this.current_track = track;
 	if(!track)
 	{
-		this.property_widget.setValue( "" );
-		this.interpolation_widget.setValue( LS.NONE );
+		//this.property_widget.setValue( "" );
+		//this.interpolation_widget.setValue( LS.NONE );
 		return;
 	}
 
@@ -703,20 +881,52 @@ Timeline.prototype.showPropertyInfo = function( track )
 	if(!info)
 		return;
 
-	this.property_widget.setValue( info.name );
-	this.interpolation_widget.setValue( track.interpolation );
+	//this.property_widget.setValue( info.name );
+	//this.interpolation_widget.setValue( track.interpolation );
 }
+*/
 
 Timeline.prototype.update = function( dt )
 {
-	if(!this.playing || !this.current_take)
+	if(!this.current_take || (!this.recording && !this.playing) )
 		return;
 
-	var time = this.session.current_time + dt;
-	if( time >= this.current_take.duration )
-		time = time - this.current_take.duration;
+	if(this.recording)
+	{
+		//update coundown in screen
+		var elem = document.getElementById("timeline-recording-countdown");
+		if(this._recording_time < 0)
+		{
+			if(elem)
+			{
+				var text = Math.abs(this._recording_time).toFixed(2);
+				elem.innerHTML = text;
+			}
+			this._recording_time += dt;
+		}
+		else
+		{
+			//elem.style.display = "none";
+			elem.innerHTML = "GO";
+			elem.style.opacity = 0;
 
-	this.setCurrentTime( time );
+			//increase
+			var time = this.session.current_time + dt;
+			if( time >= this.current_take.duration )
+				this.current_take.duration = time;
+			var sampled = this.sampleAllTracks(true,time); //sample current values
+			this.setCurrentTime( time ); //apply changes if preview is on
+		}
+	}
+	
+	if(this.playing)
+	{
+		var time = this.session.current_time + dt;
+		if( time >= this.current_take.duration )
+			time = time - this.current_take.duration;
+		this.setCurrentTime( time );
+	}
+
 }
 
 Timeline.prototype.canvasTimeToX = function( time )
@@ -731,8 +941,15 @@ Timeline.prototype.canvasXToTime = function( x )
 
 Timeline.prototype.onMouse = function(e)
 {
+	if( this.autoresize )
+		this.resize();
+
 	if(!this.session)
+	{
+		if(this._must_redraw)
+			this.redrawCanvas();
 		return;
+	}
 
 	var root_element = this.canvas;//e.target;
 	var b = root_element.getBoundingClientRect();
@@ -752,6 +969,25 @@ Timeline.prototype.onMouse = function(e)
 
 		if(item)
 		{
+			var now = getTime();
+			if( this._last_click_time && ( now - this._last_click_time ) < 200 ) //dbl click
+			{
+				var time = this.session.current_time;
+				var track = this.current_take.tracks[ item.track ];
+				if( item.type == "keyframe" && track )
+				{	
+					if( track.type == "events")
+						this.showAddEventKeyframeDialog( track, time, track.getKeyframe( item.keyframe ) );
+					else
+						this.showEditKeyframeDialog( track, time, track.getKeyframe( item.keyframe ) );
+				}
+				if(item.type == "track" && track)
+					this.showTrackOptionsDialog( track );
+				//this.showPropertyInfo( this.current_take.tracks[ item.track ] );
+			}
+			this._last_click_time = now;
+
+
 			if(item.draggable)
 				this._item_dragged = item;
 			else
@@ -759,8 +995,8 @@ Timeline.prototype.onMouse = function(e)
 
 			if(item.type == "timeline")
 				this.setCurrentTime( this.canvasXToTime( e.mousex ) );
-			else if(item.type == "track")
-				this.showPropertyInfo( this.current_take.tracks[ item.track ] );
+			//else if(item.type == "track")
+			//	this.showPropertyInfo( this.current_take.tracks[ item.track ] );
 
 			if(item.type == "keyframe")
 			{
@@ -947,6 +1183,11 @@ Timeline.prototype.nextKeyframe = function()
 	this.setCurrentTime( closest_time );
 }
 
+Timeline.prototype.onShow = function()
+{
+	this.resize();
+}
+
 
 Timeline.prototype.onMouseWheel = function(e)
 {
@@ -984,6 +1225,220 @@ Timeline.prototype.onMouseWheel = function(e)
 	return false;
 }
 
+Timeline.prototype.showOptionsContextMenu = function( e )
+{
+	var that = this;
+	var options = ["New Animation","Load Animation","Scene Animation",null,"Baking Tools"];
+	var animation_options = {title:"Animation Options",disabled:!this.current_take};
+	options.push(animation_options);
+
+	var menu = new LiteGUI.ContextMenu( options, { event: e, callback: function(v) {
+		if(v == "New Animation")
+			that.showNewAnimationDialog();
+		else if(v == "Load Animation")
+			that.onLoadAnimation();
+		else if(v == "Scene Animation")
+			that.onSceneAnimation();
+		else if(v == "Baking Tools")
+			that.onShowBakingDialog();
+		else if(v == animation_options)
+			that.onShowAnimationOptionsDialog();
+	}});
+}
+
+Timeline.prototype.showTakeOptionsDialog = function( e )
+{
+	var that = this;
+
+	var dialog = new LiteGUI.Dialog({ title:"Take Options", closable: true, width: 600, draggable: true } );
+
+	var area = new LiteGUI.Area();
+	area.split("horizontal",["50%",null]);
+	dialog.add( area );
+
+	var widgets1 = new LiteGUI.Inspector();
+	widgets1.on_refresh = inner_refresh_left;
+	area.getSection(0).add( widgets1 );
+
+	var widgets2 = new LiteGUI.Inspector();
+	widgets2.on_refresh = inner_refresh_right;
+	area.getSection(1).add( widgets2 );
+
+	var selected_take_name = "default";
+	var new_take_name = "new_take";
+
+	inner_refresh_left();
+	inner_refresh_right();
+	dialog.show();
+
+	function inner_refresh_left()
+	{
+		var widgets = widgets1;
+
+		var selected_take = that.current_animation.takes[ selected_take_name ];
+		var duration = selected_take ? selected_take.duration : 0;
+		var tracks = selected_take ? selected_take.tracks.length : 0;
+
+		widgets.clear();
+		widgets.addTitle("Takes");
+		var takes = [];
+		for( var i in that.current_animation.takes )
+			takes.push( i );
+		widgets.addList( null, takes, { height: 140, selected: selected_take_name, callback: function(v){
+			selected_take_name = v;
+			widgets1.refresh();
+			widgets2.refresh();
+		}});
+		widgets.addButtons( null, ["Copy","Paste","Delete"], function(v){
+			if(v == "Copy")
+			{
+				var data = selected_take.serialize();
+				data._object_class = "LS.Animation.Take";
+				if( selected_take )
+					LiteGUI.toClipboard( data, true );
+			}
+			if(v == "Paste")
+			{
+				var data = LiteGUI.getLocalClipboard();
+				if(!data || data._object_class !== "LS.Animation.Take")
+					return;
+				var take = new LS.Animation.Take();
+				take.configure( data );
+				if( that.current_animation.takes[ take.name ] )
+					take.name = take.name + ((Math.random() * 100)|0);
+				selected_take_name = take.name;
+				that.addUndoAnimationEdited( that.current_animation );
+				that.current_animation.addTake( take );
+				that.setAnimation( that.current_animation, selected_take_name );
+				that.animationModified();
+				widgets1.refresh();
+				widgets2.refresh();
+			}
+			if(v == "Delete")
+			{
+				if( that.current_animation.getNumTakes() <= 1 )
+					return;
+				that.addUndoAnimationEdited( that.current_animation );
+				that.current_animation.removeTake( selected_take_name );
+				selected_take_name = Object.keys( that.current_animation.takes )[0];
+				that.animationModified();
+				that.setAnimation( that.current_animation, selected_take_name );
+				widgets1.refresh();
+				widgets2.refresh();
+			}
+		});
+
+		widgets.addTitle("Create New take");
+		widgets.addString("Name",new_take_name,{ callback: function(v){
+			new_take_name = v;
+		}});
+		widgets.addButton( null, "Create Take", inner_new_take);
+
+		dialog.adjustSize(10);
+	}
+
+	function inner_refresh_right()
+	{
+		var widgets = widgets2;
+
+		var selected_take = that.current_animation.takes[ selected_take_name ];
+		var duration = selected_take ? selected_take.duration : 0;
+		var tracks = selected_take ? selected_take.tracks.length : 0;
+
+		widgets.clear();
+
+		widgets.addTitle("Animation");
+		widgets.addString("Name",  that.current_animation.fullpath || that.current_animation.filename );
+
+		widgets.addTitle("Selected Take");
+		widgets.addStringButton("Name",selected_take_name,{ button: "&#9998;", callback_button: function(v){
+			that.addUndoAnimationEdited( that.current_animation );
+			that.current_animation.renameTake( selected_take_name, v );
+			selected_take_name = v;
+			that.animationModified();
+			that.setAnimation( that.current_animation, selected_take_name );
+			widgets1.refresh();
+			widgets2.refresh();
+		}});
+
+		widgets.widgets_per_row = 2;
+		widgets.addString("Duration", duration + "s");
+		widgets.addString("Num. Tracks", tracks|0 );
+		widgets.widgets_per_row = 1;
+
+		//actions
+		widgets.addTitle("Actions on Take");
+
+		widgets.widgets_per_row = 2;
+		var values = [];
+		//"Pack all tracks","Unpack all tracks","Use names as ids","Optimize Tracks","Match Translation","Only Rotations"
+
+		for(var i in Timeline.actions.take)
+			values.push(i);
+
+		var action = values[0];
+		widgets.addCombo("Actions", action,{ values: values, width: "80%", callback: function(v){
+			action = v;	
+		}});
+
+		widgets.addButton(null,"Go",{ width: "20%", callback: function(){
+			var total = 0;
+
+			var action_callback = Timeline.actions.take[ action ];
+			if(!action_callback)
+				return;
+
+			total = action_callback( that.current_animation, that.current_take );
+			LiteGUI.alert("Tracks modified: " + total);
+			if(total)
+				that.animationModified();
+		}});
+		widgets.widgets_per_row = 1;
+
+		//interpolation
+		widgets.widgets_per_row = 2;
+		var interpolation = Timeline.interpolation_values["linear"];
+		widgets.addCombo("Set Interpolation to all tracks", interpolation, { values: Timeline.interpolation_values, width: "80%", callback: function(v){
+			interpolation = v;	
+		}});
+
+		widgets.addButton(null,"Go",{ width: "20%", callback: function(){
+			var total = that.current_take.setInterpolationToAllTracks( interpolation );
+			LiteGUI.alert("Tracks modified: " + total);
+			if(total)
+				that.animationModified();
+		}});
+		widgets.widgets_per_row = 1;
+
+		widgets.addTitle("Trim the tracks");
+		widgets.widgets_per_row = 3;
+		var from_widget = widgets.addNumber("from", 0, { name_width: 40 } );
+		var to_widget = widgets.addNumber("to", duration, { name_width: 40 } );
+		widgets.addButton(null,"TRIM", function(){
+			var from_t = from_widget.getValue();
+			var to_t = to_widget.getValue();
+			var total = that.current_take.trimTracks( from_t, to_t );
+			if(total)
+				that.animationModified();
+			that.redrawCanvas();
+		});
+		widgets.widgets_per_row = 1;
+
+		dialog.adjustSize(10);
+	}
+
+	function inner_new_take()
+	{
+		that.addUndoAnimationEdited( that.current_animation );
+		that.current_animation.createTake( new_take_name );
+		selected_take_name = new_take_name;
+		that.setAnimation( that.current_animation, selected_take_name );
+		widgets.refresh();
+	}
+}
+
+
+
 Timeline.prototype.onContextMenu = function( e )
 {
 	if(!this.current_take)
@@ -998,12 +1453,14 @@ Timeline.prototype.onContextMenu = function( e )
 	var track = null;
 	if(item && item.track !== undefined )
 		track = this.current_take.tracks[ item.track ];
+	var selection = this.session ? this.session.selection : null;
 
 	var time = this.session.current_time; //this.canvasXToTime( e.mousex );
 
 	var values = [];
 
 	values.push( { title: "Add New Track", callback: this.showNewTrack.bind(this) } );
+	values.push( { title: "Assign Node Names", callback: this.assignNodeNames.bind(this) } );
 	values.push( null );
 
 	if(item.type == "keyframe" && track.type == "events")
@@ -1016,7 +1473,10 @@ Timeline.prototype.onContextMenu = function( e )
 			values.push( { title: "Add Event", callback: inner_add_event_keyframe } );
 		else
 			values.push( { title: "Add Keyframe", callback: inner_add_keyframe } );
-		values.push( { title: "Options", callback: inner_options } );
+		if( selection && selection.type == "keyframe")
+			values.push( { title: "Copy Keyframe", callback: inner_copy_keyframe } );
+		values.push( { title: "Paste Keyframe", callback: inner_paste_keyframe } );
+		values.push( { title: "Edit Track", callback: inner_edit } );
 		values.push( { title: track.enabled ? "Disable" : "Enable", callback: inner_toggle } );
 		values.push( null );
 		values.push( { title:"Clone Track", callback: inner_clone } );
@@ -1024,7 +1484,7 @@ Timeline.prototype.onContextMenu = function( e )
 		values.push( { title:"Delete Track", callback: inner_delete } );
 	}
 
-	var menu = new LiteGUI.ContextualMenu( values, { event: e, callback: function(value) {
+	var menu = new LiteGUI.ContextMenu( values, { event: e, callback: function(value) {
 		that.redrawCanvas();
 	}});
 
@@ -1032,7 +1492,7 @@ Timeline.prototype.onContextMenu = function( e )
 	{
 		track.enabled = !track.enabled;
 		that.animationModified();
-
+		RenderModule.requestFrame();
 	}
 
 	function inner_select()
@@ -1065,9 +1525,49 @@ Timeline.prototype.onContextMenu = function( e )
 		that.animationModified();
 	}
 
-	function inner_options()
+	function inner_edit()
 	{
-		that.showTrackOptions( track );
+		that.showTrackOptionsDialog( track );
+	}
+
+	function inner_copy_keyframe()
+	{
+		if(!track || !that.session.selection || that.session.selection.type != "keyframe" )
+			return;
+		
+		var keyframe_data = track.getKeyframe( that.session.selection.keyframe );
+		if(!keyframe_data)
+			return;
+
+		//console.log(keyframe_data);
+		var keyframe = {
+			type: "keyframe",
+			time: keyframe_data[0],
+			data: keyframe_data[1],
+			value_type: LS.getObjectClassName( keyframe_data[1] )
+		};
+
+		LiteGUI.toClipboard( JSON.stringify( keyframe ) );
+	}
+
+	function inner_paste_keyframe()
+	{
+		if(!track)
+			return;
+
+		var data = LiteGUI.getLocalClipboard();
+		if(!data)
+			return;
+		that.addUndoTrackEdited( track );
+
+		var keyframe = data;
+		if( keyframe.type !== "keyframe" )
+			return console.error( "local clipboard does not contain a keyframe:", keyframe.type );
+		var value = new window[ keyframe.value_type ]( keyframe.data ); //cast
+		track.addKeyframe( time, value );
+		that.animationModified();
+		that._must_redraw = true;
+		RenderModule.requestFrame();
 	}
 
 	function inner_add_keyframe()
@@ -1078,14 +1578,81 @@ Timeline.prototype.onContextMenu = function( e )
 
 	function inner_add_event_keyframe()
 	{
-		that.showAddEventKeyframe(track, time);
+		that.showAddEventKeyframeDialog(track, time);
 	}
 
 	function inner_edit_event_keyframe()
 	{
-		that.showAddEventKeyframe(track, time, track.getKeyframe( item.keyframe ) );
+		that.showAddEventKeyframeDialog(track, time, track.getKeyframe( item.keyframe ) );
 	}
 	
+}
+
+Timeline.prototype.addUndoAnimationEdited = function( animation )
+{
+	if(!animation)
+		return;
+
+	var that = this;
+
+	UndoModule.addUndoStep({ 
+		title: "Animation modified: " + animation.name,
+		data: { animation_name: animation.name, data: animation.serialize() },
+		callback_undo: function(d) {
+			var anim = d.animation_name == LS.Animation.DEFAULT_SCENE_NAME ? LS.GlobalScene.animation : LS.ResourcesManager.resources[ d.animation_name ];
+			if(!anim)
+				return;
+			d.new_data = anim.serialize();
+			anim.configure( d.data );
+			that.animationModified();
+			that.redrawCanvas();
+		},
+		callback_redo: function(d) {
+			var anim = d.animation_name == LS.Animation.DEFAULT_SCENE_NAME ? LS.GlobalScene.animation : LS.ResourcesManager.resources[ d.animation_name ];
+			if(!anim)
+				return;
+			anim.configure( d.new_data );
+			that.animationModified();
+			that.redrawCanvas();
+		}
+	});
+}
+
+Timeline.prototype.addUndoTakeEdited = function( info )
+{
+	if(!info)
+		return;
+
+	var that = this;
+
+	UndoModule.addUndoStep({ 
+		title: "Take edited ",
+		data: { animation: that.current_animation.name, take: info.name, data: info },
+		callback_undo: function(d) {
+			var anim = d.animation == LS.Animation.DEFAULT_SCENE_NAME ? LS.GlobalScene.animation : LS.ResourcesManager.resources[ d.animation ];
+			if(!anim)
+				return;
+			var take = anim.getTake(d.take);
+			if(!take)
+				return;
+			d.new_data = take.serialize();
+			take.configure( d.data );
+			that.animationModified();
+			that.redrawCanvas();
+		},
+		callback_redo: function(d) {
+			var anim = d.animation == LS.Animation.DEFAULT_SCENE_NAME ? LS.GlobalScene.animation : LS.ResourcesManager.resources[ d.animation ];
+			if(!anim)
+				return;
+			var take = anim.getTake(d.take);
+			if(!take)
+				return;
+			take.configure( d.new_data );
+			that.animationModified();
+			that.redrawCanvas();
+		}
+
+	});
 }
 
 Timeline.prototype.addUndoTrackCreated = function( track )
@@ -1095,18 +1662,32 @@ Timeline.prototype.addUndoTrackCreated = function( track )
 
 	var that = this;
 
-	LiteGUI.addUndoStep({ 
+	UndoModule.addUndoStep({ 
+		title: "Track created: " + track.name,
 		data: { animation: that.current_animation.name, take: that.current_take.name, index: that.current_take.tracks.indexOf( track ) },
-		callback: function(d) {
-			var anim = LS.ResourcesManager.resources[d.animation];
+		callback_undo: function(d) {
+			var anim = d.animation == LS.Animation.DEFAULT_SCENE_NAME ? LS.GlobalScene.animation : LS.ResourcesManager.resources[ d.animation ];
 			if(!anim)
 				return;
 			var take = anim.getTake(d.take);
 			if(!take)
 				return;
 			var track = take.tracks[ d.index ];
-			if(track)
-				take.removeTrack( track );
+			if(!track)
+				return;
+			d.track = track;
+			take.removeTrack( track );
+			that.animationModified();
+			that.redrawCanvas();
+		},
+		callback_redo: function(d) {
+			var anim = d.animation == LS.Animation.DEFAULT_SCENE_NAME ? LS.GlobalScene.animation : LS.ResourcesManager.resources[ d.animation ];
+			if(!anim)
+				return;
+			var take = anim.getTake(d.take);
+			if(!take)
+				return;
+			take.tracks.splice( d.index,0, d.track );
 			that.animationModified();
 			that.redrawCanvas();
 		}
@@ -1120,18 +1701,35 @@ Timeline.prototype.addUndoTrackEdited = function( track )
 
 	var that = this;
 
-	LiteGUI.addUndoStep({ 
+	UndoModule.addUndoStep({ 
+		title: "Track edited: " + track.name,
 		data: { animation: that.current_animation.name, take: that.current_take.name, track: track.serialize(), index: that.current_take.tracks.indexOf( track ) },
-		callback: function(d) {
-			var anim = LS.ResourcesManager.resources[d.animation];
+		callback_undo: function(d) {
+			var anim = d.animation == LS.Animation.DEFAULT_SCENE_NAME ? LS.GlobalScene.animation : LS.ResourcesManager.resources[ d.animation ];
 			if(!anim)
 				return;
 			var take = anim.getTake(d.take);
 			if(!take)
 				return;
 			var track = take.tracks[ d.index ];
-			if(track)
-				track.configure( d.track );
+			if(!track)
+				return;
+			d.old_data = track.serialize();
+			track.configure( d.track );
+			that.animationModified();
+			that.redrawCanvas();
+		},
+		callback_redo: function(d) {
+			var anim = d.animation == LS.Animation.DEFAULT_SCENE_NAME ? LS.GlobalScene.animation : LS.ResourcesManager.resources[ d.animation ];
+			if(!anim)
+				return;
+			var take = anim.getTake(d.take);
+			if(!take)
+				return;
+			var track = take.tracks[ d.index ];
+			if(!track)
+				return;
+			track.configure( d.old_data );
 			that.animationModified();
 			that.redrawCanvas();
 		}
@@ -1142,42 +1740,231 @@ Timeline.prototype.addUndoTrackRemoved = function( track )
 {
 	var that = this;
 
-	LiteGUI.addUndoStep({ 
+	UndoModule.addUndoStep({ 
+		title: "Track removed: " + track.name,
 		data: { animation: that.current_animation.name, take: that.current_take.name, track: track.serialize(), index: that.current_take.tracks.indexOf( track ) },
-		callback: function(d) {
-			var anim = LS.ResourcesManager.resources[d.animation];
+		callback_undo: function(d) {
+			var anim = d.animation == LS.Animation.DEFAULT_SCENE_NAME ? LS.GlobalScene.animation : LS.ResourcesManager.resources[ d.animation ];
 			if(!anim)
 				return;
 			var take = anim.getTake(d.take);
 			if(!take)
 				return;
 			var track = new LS.Animation.Track( d.track );
+			d.new_track = track;
 			take.tracks.splice( d.index,0, track );
+			that.animationModified();
+			that.redrawCanvas();
+		},
+		callback_redo: function(d) {
+			var anim = d.animation == LS.Animation.DEFAULT_SCENE_NAME ? LS.GlobalScene.animation : LS.ResourcesManager.resources[ d.animation ];
+			if(!anim)
+				return;
+			var take = anim.getTake(d.take);
+			if(!take)
+				return;
+			take.removeTrack( d.new_track );
 			that.animationModified();
 			that.redrawCanvas();
 		}
 	});
 }
 
-Timeline.prototype.insertKeyframe = function( track )
+Timeline.prototype.onInsertKeyframeButton = function( element, relative )
 {
-	if(!track)
+	//show dialog to select keyframe options (by uid or nodename)
+	//TODO
+
+	var locator = element.dataset["propertyuid"];
+	var name = element.dataset["propertyname"];
+	this.processInsertLocator( locator, { add_keyframe: true, name: name, relative: relative } );
+}
+
+
+Timeline.prototype.processInsertLocator = function( locator, options )
+{
+	options = options || {};
+
+	var that = this;
+	var take = this.current_take;
+	if(!take)
+	{
+		LiteGUI.confirm("No track selected, do you want to use the Scene Animation track?.", function(v){
+			if(!v)
+				return;
+			that.onSceneAnimation();
+			that.processInsertLocator( locator, options );
+		});
 		return;
+	}
+
+	var info = LS.GlobalScene.getPropertyInfo( locator );
+	if(info === null)
+		return console.warn("Property info not found: " + locator );
+
+	var original_locator = locator;
+	var name_tokens = [];
+
+	if(info.node)
+		name_tokens.push(info.node.name);
+	if(info.target && info.target.constructor.is_component)
+		name_tokens.push( LS.getObjectClassName( info.target ) );
+	if(options.name)
+		name_tokens.push( options.name );
+	var name = name_tokens.join("/");
+
+	//convert absolute to relative locator
+	if( options.relative )
+	{
+		var t = locator.split("/");
+		if(info.node && info.node.uid == t[0])
+		{
+			t[0] = info.node.name;
+			if(info.target)
+				t[1] = LS.getObjectClassName( info.target );
+			locator = t.join("/");
+		}
+	}
 
 	//quantize time
-	var time = Math.round( this.session.current_time * this.framerate) / this.framerate;
+	var time = Math.round( this.session.current_time * this.framerate ) / this.framerate;
+
+	var size = 0;
+	var value = info.value;
+	var interpolation = LS.BEZIER;
+	if(info.value !== null)
+	{
+		if( info.value.constructor == Float32Array )
+			size = info.value.length;
+		else if( info.value.constructor === Number )
+			size = 1;
+	}
+
+	if(size == 0 || info.type == "enum")
+		interpolation = LS.NONE;
+
+	var track_locator = locator; //in events the track locator is different from the property locator because they share one track for events and functions
+	if( info.type == "function" ) //adjust locator
+	{
+		var tokens = locator.split("/");
+		tokens.pop(); //remove last
+		original_locator = track_locator = tokens.join("/");
+		if( info.target && info.target.getComponent )
+			name = info.node.name + "/" + LS.getObjectClassName( info.target.getComponent() );
+		value = [ value, null, 1 ]; //the one means FUNCTION, 0 means EVENT
+	}
+
+	var track = take.getTrack( track_locator );
+	var track_created = false;
+	if(!track)
+	{
+		//search for a track that has the same locator (in case you created a relative track and clicked the animation button)
+		for(var i = 0; i < take.tracks.length; ++i)
+		{
+			if( take.tracks[i]._original_locator != original_locator )
+				continue;
+			track = take.tracks[i];
+			break;
+		}
+
+		if(!track)
+		{
+			var type = info.type;
+			if(type == "object" || type == "function" || type == LS.TYPES.SCENENODE || type == LS.TYPES.COMPONENT )
+				type = "events";
+
+			track = take.createTrack( { name: name, property: track_locator, type: type, value_size: size, interpolation: interpolation, duration: this.session.end_time, data: [] } );
+			track._original_locator = original_locator;
+			track_created = true;
+		}
+	}
+
+	if(options.add_keyframe)
+	{
+		//undo
+		if(track_created)
+			this.addUndoTrackCreated( track );
+		else
+			this.addUndoTrackEdited( track );
+
+		console.log("Keyframe added");
+		track.addKeyframe( time , value );
+	}
+
+
+	if(!options.ignore_redraw)
+	{
+		this.redrawCanvas();
+		RenderModule.requestFrame();
+	}
+}
+
+Timeline.prototype.insertKeyframe = function( track, only_different, time )
+{
+	if(!track)
+		return false;
+
+	//quantize time
+	if(time === undefined)
+		time = this.session.current_time;
+	time = Math.round( time * this.framerate ) / this.framerate;
 
 	//sample
 	var info = track.getPropertyInfo();
 	if(!info)
-		return;
+		return false;
+
+	//only store if the value is different
+	if( only_different && track._last_sample !== undefined )
+	{
+		//sample
+		if( track.value_size == 1)
+		{
+			if( Math.abs(track._last_sample - info.value) < 0.0001 )
+				return false; //same value
+		}
+		else if(track.value_size > 1)
+		{
+			for(var i = 0; i < track.value_size; ++i)
+			{
+				if( Math.abs(track._last_sample[i] - info.value[i]) < 0.0001 )
+					return false; //same value
+			}
+		}
+		else
+			if( track._last_sample == info.value )
+				return false; //same value
+	}
 
 	//add
 	track.addKeyframe( time , info.value );
 	this.animationModified();
 
-	console.log("Keyframe added");
 	this._must_redraw = true;
+	RenderModule.requestFrame();
+	return true;
+}
+
+Timeline.prototype.sampleAllTracks = function( only_different, time )
+{
+	if(!this.current_take)
+		return false;
+
+	var sampled_tracks = {};
+
+	for(var i = 0; i < this.current_take.tracks.length; ++i)
+	{
+		var track = this.current_take.tracks[i];
+		if(track.enabled === false)
+			continue;
+
+		if( this.insertKeyframe(track, only_different, time) )
+			sampled_tracks[i] = true;
+		//var sample = track.getSample(this.session.current_time, true);
+		//var info = track.getPropertyInfo();
+	}
+
+	return sampled_tracks;
 }
 
 Timeline.prototype.removeSelection = function()
@@ -1210,6 +1997,7 @@ Timeline.prototype.removeSelection = function()
 			this.redrawCanvas();
 		}
 	}
+	LS.GlobalScene.refresh();
 }
 
 
@@ -1244,6 +2032,7 @@ Timeline.prototype.getMouseItem = function( e )
 				track.enabled = !track.enabled;
 			this.session.selection = { type: "track", track: track_index };
 			this._must_redraw = true;
+			RenderModule.requestFrame();
 		}
 
 		if(track)
@@ -1274,12 +2063,13 @@ Timeline.prototype.getMouseItem = function( e )
 	//	over = true;
 
 	this._must_redraw = true;
+	var animation_filename = this.current_animation.fullpath || this.current_animation.filename;
 
 	if(e.type == "mousedown" )
 	{
 		if(over)
 		{
-			this.session.selection = { type: "keyframe", track: track_index, keyframe: index };
+			this.session.selection = { type: "keyframe", animation: animation_filename , track: track_index, keyframe: index };
 			this.setCurrentTime( keyframe[0] );
 		}
 		else
@@ -1287,9 +2077,9 @@ Timeline.prototype.getMouseItem = function( e )
 	}
 
 	if(over)
-		return { type: "keyframe", track: track_index, keyframe: index, cursor: "crosshair", draggable: true };
+		return { type: "keyframe", animation: animation_filename, track: track_index, keyframe: index, cursor: "crosshair", draggable: true };
 	else
-		return { type: "background", track: track_index, draggable: true, cursor: null };
+		return { type: "background", animation: animation_filename, track: track_index, draggable: true, cursor: null };
 
 	return null;
 }
@@ -1297,8 +2087,153 @@ Timeline.prototype.getMouseItem = function( e )
 Timeline.prototype.renderEditor = function()
 {
 	//used to render trajectories
-	//TO DO
+	//?? but it does! where is the code then?
 }
+
+Timeline.prototype.selectKeyframe = function( track_index, keyframe_index )
+{
+	if(!this.session)
+		return;
+	var animation_filename = this.current_animation.fullpath || this.current_animation.filename;
+	this.session.selection = { type: "keyframe", animation: animation_filename, track: track_index, keyframe: keyframe_index };
+	this.redrawCanvas();
+}
+
+
+Timeline.prototype.onShowAnimationOptionsDialog = function()
+{
+	var that = this;
+	if(!this.current_take)
+		return;
+
+	var dialog = LiteGUI.Dialog.getDialog("animation_options");
+	if(dialog)
+	{
+		dialog.highlight();
+		return;
+	}
+
+	dialog = new LiteGUI.Dialog("animation_options",{ title:"Animation Options", width: 400, draggable: true, closable: true });
+	
+	var widgets = new LiteGUI.Inspector();
+	widgets.addString("Name", this.current_animation.filename, { disabled: true } );
+	widgets.addInfo("Tracks", this.current_take.tracks.length );
+
+	//actions
+	widgets.widgets_per_row = 2;
+	var values = [];
+	//"Pack all tracks","Unpack all tracks","Use names as ids","Optimize Tracks","Match Translation","Only Rotations"
+
+	for(var i in Timeline.actions.take)
+		values.push(i);
+
+	var action = values[0];
+	widgets.addCombo("Actions", action,{ values: values, width: "80%", callback: function(v){
+		action = v;	
+	}});
+
+	widgets.addButton(null,"Go",{ width: "20%", callback: function(){
+		var total = 0;
+
+		var action_callback = Timeline.actions.take[ action ];
+		if(!action_callback)
+			return;
+
+		total = action_callback( that.current_animation, that.current_take );
+		LiteGUI.alert("Tracks modified: " + total);
+		if(total)
+			LS.ResourcesManager.resourceModified( that.current_animation );
+	}});
+	widgets.widgets_per_row = 1;
+
+	//interpolation
+	widgets.widgets_per_row = 2;
+	var interpolation = Timeline.interpolation_values["linear"];
+	widgets.addCombo("Set Interpolation to all tracks", interpolation, { values: Timeline.interpolation_values, width: "80%", callback: function(v){
+		interpolation = v;	
+	}});
+
+	widgets.addButton(null,"Go",{ width: "20%", callback: function(){
+		var total = that.current_take.setInterpolationToAllTracks( interpolation );
+		LiteGUI.alert("Tracks modified: " + total);
+		if(total)
+			LS.ResourcesManager.resourceModified( that.current_animation );
+	}});
+	widgets.widgets_per_row = 1;
+
+	
+	widgets.addSeparator();
+	widgets.addButton(null,"Close", function(){
+		dialog.close();	
+	});
+
+	dialog.add( widgets );
+	dialog.adjustSize(4);
+	dialog.show( null, this.root );
+}
+
+Timeline.prototype.onShowBakingDialog = function()
+{
+	var dialog = new LiteGUI.Dialog("baking_tools",{ title:"Baking Tools", width: 400, draggable: true, closable: true });
+	var that = this;
+
+	var node = SelectionModule.getSelectedNode();
+
+	var node_uid = node ? node.uid : "";
+
+	var options = {
+		create_new_tracks: true,
+		only_selected: false,
+		relative: true,
+		only_changed: false,
+		add_keyframe: true, //adds the keyframe
+		ignore_redraw: true //avoids redrawing after every keyframe insert
+	};
+
+	var widgets = new LiteGUI.Inspector({ name_width: 180 });
+
+	widgets.addNode("Node Root", node_uid, { callback: function(v){
+		node_uid = v;
+	}});
+
+	widgets.addCheckbox("Only selected nodes", options.only_selected, { callback: function(v){
+		options.only_selected = v;
+	}});
+
+	widgets.addCheckbox("Use relative locators", options.relative, { callback: function(v){
+		options.relative = v;
+	}});
+
+	widgets.addButton(null,"Bake Current Pose", function(){
+		var nodes = null;
+		if(options.only_selected)
+			nodes = SelectionModule.getSelectedNodes();
+		else
+		{
+			if(!node_uid)
+				return LiteGUI.alert("No Node selected");
+			var node = LS.GlobalScene.getNode( node_uid );
+			if(!node)
+				return LiteGUI.alert("No Node selected");
+			nodes = node.getDescendants();
+		}
+
+		if(!nodes || !nodes.length)
+			return LiteGUI.alert("No Nodes found");
+
+		that.bakeCurrentPose( nodes, options );
+	});
+
+	widgets.addSeparator();
+	widgets.addButton(null,"Close", function(){
+		dialog.close();	
+	});
+
+	dialog.add( widgets );
+	dialog.adjustSize(0);
+	dialog.show( null, this.root );
+}
+
 
 Timeline.prototype.showNewAnimationDialog = function()
 {
@@ -1324,16 +2259,36 @@ Timeline.prototype.showNewAnimationDialog = function()
 			return;
 		}
 
-		var name = widgets.widgets["Name"].getValue() + ".wbin";
-		var folder = widgets.widgets["Folder"].getValue();
-		var duration = parseFloat( widgets.widgets["Duration"].getValue() );
+		var name = widgets.widgets_by_name["Name"].getValue() + ".wbin";
+		var folder = widgets.widgets_by_name["Folder"].getValue();
+		var duration = parseFloat( widgets.widgets_by_name["Duration"].getValue() );
 		that.onNewAnimation( name, duration, folder );
 		dialog.close();
 	});
 
 	dialog.add( widgets );
 	dialog.adjustSize();
-	dialog.show();
+	dialog.show( null, this.root );
+}
+
+Timeline.prototype.assignNodeNames = function()
+{
+	if(!this.current_take)
+		return;
+
+	var take = this.current_take;
+	for(var i = 0; i < take.tracks.length; ++i)
+	{
+		var track = take.tracks[i];
+		var info = track.getPropertyInfo();
+		if(!info)
+			continue;
+		var node = info.node;
+		if(!node)
+			continue;
+		track.name = track.getIDasName() || track.property;
+	}
+	this.redrawCanvas();
 }
 
 Timeline.prototype.showNewTrack = function()
@@ -1363,9 +2318,8 @@ Timeline.prototype.showNewTrack = function()
 	var node_widget = widgets.addString("Node", "", { disabled: true } );
 	var type_widget = widgets.addString("Type", "", { disabled: true } );
 
-	widgets.addCombo("Interpolation", "none", { values: {"none": LS.NONE, "linear": LS.LINEAR, "bezier": LS.BEZIER }, callback: function(v){ 
-		
-	}});
+	widgets.addCombo("Interpolation", "none", { values: Timeline.interpolation_values }); //value read manually
+
 	widgets.addButtons(null,["Create","Cancel"], function(v){
 		if(v == "Create" && locator)
 		{
@@ -1383,10 +2337,7 @@ Timeline.prototype.showNewTrack = function()
 					info.type = "events";
 			}
 
-			var track = new LS.Animation.Track({ name: widgets.values["Name"], property: locator, type: info ? info.type : "number", value_size: value_size, interpolation: widgets.values["Interpolation"] });
-			that.current_take.addTrack( track );
-			that.addUndoTrackCreated( track );
-			that.animationModified();
+			that.createTrack({ name: widgets.values["Name"], locator: locator, type: (info ? info.type : null), value_size: value_size, interpolation: widgets.values["Interpolation"] });
 		}
 		dialog.close();
 		that.redrawCanvas();
@@ -1395,62 +2346,115 @@ Timeline.prototype.showNewTrack = function()
 
 	dialog.add( widgets );
 	dialog.adjustSize();
-	dialog.show();
+	dialog.show( null, this.root );
 }
 
-Timeline.prototype.showTrackOptions = function( track )
+Timeline.prototype.createTrack = function( options )
+{
+	if(!options || !this.current_take)
+		return;
+
+	var name = options.name;
+	var locator = options.locator;
+	var interpolation = options.interpolation || LS.NONE;
+	var type = options.type || "number";
+	var value_size = options.value_size || 0;
+
+	var track = new LS.Animation.Track({ name: name, property: locator, type: type, value_size: value_size, interpolation: interpolation });
+	this.current_take.addTrack( track );
+	this.addUndoTrackCreated( track );
+	this.animationModified();
+
+	return track;
+}
+
+Timeline.prototype.showTrackOptionsDialog = function( track )
 {
 	var that = this;
 	var dialog = new LiteGUI.Dialog("track options",{ title:"Track Options", width: 500, draggable: true, closable: true });
 	
 	var widgets = new LiteGUI.Inspector();
-	widgets.addCheckbox("Enabled", track.enabled, function(v){ 
-		track.enabled = v; that.redrawCanvas();
-		that.animationModified();
-	});
-	widgets.addString("Name", track.name, function(v){ 
-		track.name = v; that.redrawCanvas();
-		that.animationModified();
-	});
-	widgets.addString("Property", track.property, function(v){ 
-		var info = track.getPropertyInfo();
-		if(info && info.type != track.type && track.getNumberOfKeyframes() )
-			LiteGUI.alert("Cannot change to a property with different type if you have keyframes, types do not match.");
-		else
-			track.property = v;
-		that.animationModified();
-		that.redrawCanvas();
-	});
-	widgets.addString("Type", track.type, { disabled: true } );
-	widgets.addCombo("Interpolation", track.interpolation, { disabled: !track.isInterpolable(), values: {"none": LS.NONE, "linear": LS.LINEAR, "bezier": LS.BEZIER }, callback: function(v){ 
-		if(track.interpolation == v)
+	widgets.on_refresh = inner_refresh;
+	inner_refresh();
+
+	function inner_refresh(){
+		widgets.clear();
+
+		widgets.addCheckbox("Enabled", track.enabled, function(v){ 
+			track.enabled = v; that.redrawCanvas();
+			that.animationModified();
+		});
+		widgets.addString("Name", track.name, function(v){ 
+			track.name = v; that.redrawCanvas();
+			that.animationModified();
+		});
+
+		widgets.addCheckbox("Packed Data", track.packed_data, function(v){ 
+			if(v)
+				track.packData();
+			else
+				track.unpackData();
+			that.animationModified();
+		});
+
+		widgets.widgets_per_row = 2;
+
+		widgets.addString("Property", track.property, { width: "70%", callback: function(v){ 
+			var info = track.getPropertyInfo();
+			if(info && info.type != track.type && track.getNumberOfKeyframes() )
+				LiteGUI.alert("Cannot change to a property with different type if you have keyframes, types do not match.");
+			else
+				track.property = v;
+			that.animationModified();
+			that.redrawCanvas();
+		}});
+
+		widgets.addButton(null,"Convert to Node Name", { width: "30%", callback: function(){
+			track.convertIDtoName();
+			widgets.refresh();
+		}});
+
+		widgets.addString("Type", track.type, { disabled: true } );
+		widgets.addCombo("Interpolation", track.interpolation, { disabled: !track.isInterpolable(), values: Timeline.interpolation_values, callback: function(v){ 
+			if(track.interpolation == v)
+				return;
+			track.interpolation = v;
+			that.animationModified();
+		}});
+
+		widgets.widgets_per_row = 1;
+
+		widgets.addButtons(null,["Close"], function(v){
+			dialog.close();
 			return;
-		track.interpolation = v;
-		that.animationModified();
-	}});
-	widgets.addButtons(null,["Close"], function(v){
-		dialog.close();
-		return;
-	});
+		});
+	}
 
 	dialog.add( widgets );
 	dialog.adjustSize();
-	dialog.show();
+	dialog.show( null, this.root);
 }
 
-Timeline.prototype.showAddEventKeyframe = function( track, time, keyframe )
+Timeline.prototype.showAddEventKeyframeDialog = function( track, time, keyframe )
 {
 	if(!track)
 		return;
 
 	var that = this;
-	var dialog = new LiteGUI.Dialog("event keyframe",{ title:"EventKeyframe", width: 300, draggable: true, closable: true });
+	var dialog = new LiteGUI.Dialog({ title:"Event/Call Keyframe", width: 300, draggable: true, closable: true });
 
-	var func_name = keyframe ? keyframe[1][0] : "";
+	var event_name = keyframe ? keyframe[1][0] : "";
 	var param = keyframe ? keyframe[1][1] : "";
 
+	var type = 0;
+	if( keyframe && keyframe[1] && keyframe[1][2] !== undefined )
+		type = keyframe[1][2];
+
 	var widgets = new LiteGUI.Inspector();
-	var func_widget = widgets.addString("Function", func_name, function(v) { func_name = v; } );
+	widgets.addCombo("Type", type, { values: { "Event trigger": 0, "Function call": 1 },callback: function(v){
+		type = v;
+	}});
+	var event_widget = widgets.addString("Event/Function", event_name, function(v) { event_name = v; } );
 	widgets.addString("Param", param, function(v) { param = v; } );
 
 	var info = track.getPropertyInfo();
@@ -1464,18 +2468,19 @@ Timeline.prototype.showAddEventKeyframe = function( track, time, keyframe )
 				continue;
 			values.push(i);
 		}
-		widgets.addCombo("Functions", "", { values: values, callback: function(v){ 
-			func_widget.setValue(v);
-			func_name = v;
+		widgets.addCombo("Functions", event_name, { values: values, callback: function(v){ 
+			event_widget.setValue(v);
+			event_name = v;
 		}});
 	}
 	widgets.addButtons(null,[ keyframe ? "Update" : "Insert","Cancel"], function(v){
 		if(v == "Insert")
-			track.addKeyframe( time, [func_name, param] );
+			track.addKeyframe( time, [event_name, param, type] );
 		else if(v == "Update")
 		{
-			keyframe[1][0] = func_name;
+			keyframe[1][0] = event_name;
 			keyframe[1][1] = param;
+			keyframe[1][2] = type;
 		}
 		that.redrawCanvas();
 		that.animationModified();
@@ -1485,7 +2490,92 @@ Timeline.prototype.showAddEventKeyframe = function( track, time, keyframe )
 
 	dialog.add( widgets );
 	dialog.adjustSize();
-	dialog.show();
+	dialog.show( null, this.root );
+}
+
+Timeline.prototype.showEditKeyframeDialog = function( track, time, keyframe )
+{
+	if(!track)
+		return;
+
+	var that = this;
+	var dialog = new LiteGUI.Dialog({ title:"Edit Keyframe", width: 300, draggable: true, closable: true });
+
+	var type = track.type;
+	var value = keyframe[1]; //keyframe comes unpacked always
+
+	var info = track.getPropertyInfo();
+	if(info && info.type)
+		type = info.type;
+
+	var preview = true;
+
+
+	var widgets = new LiteGUI.Inspector();
+	widgets.addString("Type", type, { disabled: true } );
+	widgets.addString("Time", keyframe[0].toFixed(3), { disabled: true } );
+	if( LiteGUI.Inspector.widget_constructors[ type ] )
+		widgets.add( type, "Value", value, { callback: function(v){
+			that.addUndoTrackEdited( track );
+			for(var i = 0; i < track.value_size; ++i)
+				keyframe[1][i] = v[i];
+			if(preview)
+				that.applyPreview();
+			that.redrawCanvas();
+			that.animationModified();
+		}});
+	else
+		widgets.addInfo( "Value", String( value ) );
+	widgets.addCheckbox("Preview", preview, function(v) { preview = v; } );
+
+	dialog.add( widgets );
+	dialog.adjustSize();
+	dialog.show( null, this.root );
+}
+
+
+Timeline.prototype.toggleRecording = function(v)
+{
+	if(!this.current_take)
+		return false;
+
+	this.recording = v;
+
+	if( this.recording )
+	{
+		if(this.current_take.tracks.length == 0)
+		{
+			this.recording = false;
+			LiteGUI.alert("No tracks found, you must create some tracks before recording.");
+			return false;
+		}
+
+		//prepare
+		this._recording_time = -3;
+		var elem = document.createElement("div");
+		elem.id = "timeline-recording-countdown";
+		elem.className = "big-info-popup";
+		elem.innerHTML = "REC";
+		elem.style.pointerEvents = "none";
+		document.body.appendChild(elem);
+		//this.preview_widget.setValue(false);
+
+		//save UNDO
+		this._recording_undo = this.current_take.serialize();
+		//this.addUndoTakeEdited(this.current_take);
+	}
+	else //stop recording
+	{
+		var elem = document.getElementById("timeline-recording-countdown");
+		if(elem)
+			elem.parentNode.removeChild(elem);
+		
+		//this.preview_widget.setValue(true);
+		this.addUndoTakeEdited( this._recording_undo );
+		delete this._recording_undo;
+	}
+
+	return this.recording;
 }
 
 Timeline.prototype.onReload = function()
@@ -1497,8 +2587,20 @@ Timeline.prototype.onReload = function()
 		return;
 	}
 
-	if(this.current_animation.name == "@scene")
+	if(this.current_animation.name == LS.Animation.DEFAULT_SCENE_NAME )
 		this.setAnimation( LS.GlobalScene.animation );
+}
+
+Timeline.prototype.bakeCurrentPose = function( nodes, options )
+{
+	for(var i = 0; i < nodes.length; ++i)
+	{
+		var node = nodes[i];
+		var locator = node.transform.getLocator() + "/data";
+		this.processInsertLocator( locator, options );
+	}
+	LS.GlobalScene.refresh();
+	this.redrawCanvas();
 }
 
 
@@ -1522,3 +2624,85 @@ Timeline.prototype.showAddEventsTrack = function()
 	dialog.show();
 }
 */
+
+Timeline.prototype.onItemDrop = function(e)
+{
+	if(!this.current_animation)
+		this.onSceneAnimation(); //create scene animation
+
+
+	var type = e.dataTransfer.getData("type");
+	var locator = e.dataTransfer.getData("locator");
+	if(!locator && e.dataTransfer.getData("text/plain"))
+		locator = e.dataTransfer.getData("text/plain");
+
+	if( locator )
+	{
+		this.processInsertLocator( locator );
+		/*
+		var info = LS.GlobalScene.getPropertyInfo( locator );
+		if(!info)
+			return;
+
+		var name = info.name;
+		if(!name && info.node)
+			name = info.node.name;
+
+		if( info.type == "component" || info.type == "node" || info.type == "object" )
+		{
+			this.createTrack({ name: name, locator: locator, type: "events" });
+		}
+		else
+		{
+			var type = info.type;
+			if(type == "object")
+				type = "events";
+			this.createTrack({ name: name, locator: locator, type: type });
+		}
+
+		this.animationModified();
+		*/
+	}
+}
+
+//used for special actions
+Timeline.actions = {
+	animation: {},
+	take:{},
+	track: {}
+};
+
+Timeline.actions.take["Use names as ids"] = function( animation, take )
+{
+	return take.convertIDstoNames(true);
+}
+
+Timeline.actions.take["Pack all tracks"] = function( animation, take )
+{
+	return take.setTracksPacking(true);
+}
+
+Timeline.actions.take["Unpack all tracks"] = function( animation, take )
+{
+	return take.setTracksPacking(false);
+}
+
+Timeline.actions.take["Optimize Tracks"] = function( animation, take )
+{
+	return take.optimizeTracks();
+}
+
+Timeline.actions.take["Match Translation"] = function( animation, take )
+{
+	return take.matchTranslation();
+}
+
+Timeline.actions.take["Only Rotations"] = function( animation, take )
+{
+	return take.onlyRotations();
+}
+
+Timeline.actions.take["Remove scaling"] = function( animation, take )
+{
+	return take.removeScaling();
+}

@@ -1,15 +1,22 @@
 var AnimationModule = {
 	name: "Timeline",
 	enabled: true,
+
+	render_helpers: true,
 	//settings_panel: [{name:"renderer", title:"Renderer", icon:null }],
+
+	_trajectories: [],
 
 	init: function()
 	{
-		this.tab = InterfaceModule.lower_tabs_widget.addTab("Animation", {selected:true, size: "full", width: "100%"});
-		this.tab.content.style.overflow = "hidden"; 
-		this.createTimeline();
+		//create the timeline
+		this.tab = InterfaceModule.lower_tabs_widget.addWidgetTab( Timeline );
+		this.timeline = this.tab.widget;
 
-		RenderModule.viewport3d.addModule( AnimationModule ); //capture update, render trajectories
+		LEvent.bind( LS.GlobalScene, "afterRenderScene", this.renderView.bind(this));
+		LEvent.bind( LS.GlobalScene, "renderPicking", this.renderPicking.bind(this));
+
+		RenderModule.canvas_manager.addWidget( AnimationModule ); //capture update, render trajectories
 	},
 
 	createTimeline: function()
@@ -38,14 +45,127 @@ var AnimationModule = {
 	{
 		var elements = inspector.root.querySelectorAll(".keyframe_icon");
 		for(var i = 0; i < elements.length; i++)
-			elements[i].addEventListener("click", inner );
-
-		function inner(e)
 		{
-			AnimationModule.insertKeyframe(e.target);
+			var element = elements[i];
+			element.draggable = true;
+			element.addEventListener("click", inner_click );
+			element.addEventListener("contextmenu", (function(e) { 
+				if(e.button != 2) //right button
+					return false;
+				inner_rightclick(e);
+				e.preventDefault();
+				e.stopPropagation();
+				return false;
+			}).bind(this));
+			element.addEventListener("dragstart", inner_dragstart);
+		}
+
+		function inner_click(e)
+		{
+			AnimationModule.insertKeyframe( e.target, e.shiftKey );
 			e.preventDefault();
 			e.stopPropagation();
 			return true;
+		}
+
+		function inner_rightclick(e)
+		{
+			var menu = new LiteGUI.ContextMenu( ["Add UID track","Add name track","Show Info","Copy Query","Copy Unique Query"], { event: e, title:"Keyframe", callback: function(value) {
+				if(value == "Add UID track")
+					AnimationModule.insertKeyframe(e.target);
+				else if(value == "Add name track")
+					AnimationModule.insertKeyframe(e.target, true);
+				else if(value == "Copy Query")
+					AnimationModule.copyQueryToClipboard( e.target.dataset["propertyuid"], true );
+				else if(value == "Copy Unique Query")
+					AnimationModule.copyQueryToClipboard( e.target.dataset["propertyuid"] );
+				else
+					AnimationModule.showPropertyInfo( e.target.dataset["propertyuid"] );
+			}});
+		}
+
+		function inner_dragstart(e)
+		{
+			e.dataTransfer.setData("type", "property" );
+			e.dataTransfer.setData("uid", e.target.dataset["propertyuid"] );
+
+			var locator = e.target.dataset["propertyuid"];
+
+			//var info = LS.
+
+			if(e.shiftKey)
+				locator = LSQ.shortify( locator );
+			e.dataTransfer.setData("locator", locator );
+		}
+	},
+
+	copyQueryToClipboard: function( locator, shorten )
+	{
+		//shortify query
+		if(shorten)
+			locator = LSQ.shortify( locator );
+		LiteGUI.toClipboard( locator );
+	},
+
+	showPropertyInfo: function( property )
+	{
+		var info = LS.GlobalScene.getPropertyInfo( property );
+		if(!info)
+			return;
+
+		var that = this;
+		var dialog = new LiteGUI.Dialog("property_info",{ title:"Property Info", width: 400, draggable: true, closable: true });
+		
+		var widgets = new LiteGUI.Inspector();
+		var locator_widget = widgets.addString("Locator", property, function(v){});
+		/*
+		locator_widget.style.cursor = "pointer";
+		locator_widget.setAttribute("draggable","true");
+		locator_widget.addEventListener("dragstart", function(event) { 
+			event.dataTransfer.setData("locator", property );
+			event.dataTransfer.setData("type", "property");
+			if(info.node)
+				event.dataTransfer.setData("node_uid", info.node.uid);
+			//event.preventDefault();
+		});
+		*/
+		
+		widgets.addString("Short Locator", LSQ.shortify( property ), function(v){});
+
+		widgets.widgets_per_row = 2;
+		widgets.addString("Parent", info.node ? info.node.name : "", { disabled: true } );
+		widgets.addString("Container", info.target ? LS.getObjectClassName( info.target ) : "", { disabled: true } );
+		widgets.addString("Property", info.name, { disabled: true } );
+		widgets.addString("Type", info.type, { disabled: true } );
+		widgets.widgets_per_row = 1;
+
+		if(info.type == "number")
+			widgets.addNumber("Value", info.value, inner_set );
+		else if(info.type == "boolean")
+			widgets.addCheckbox("Value", info.value, inner_set );
+		else if(info.type == "vec2")
+			widgets.addVector2("Value", info.value, inner_set );
+		else if(info.type == "vec3")
+			widgets.addVector3("Value", info.value, inner_set );
+		else if(info.type == "texture")
+			widgets.addTexture("Value", info.value, inner_set );
+		else if(info.type == "mesh")
+			widgets.addMesh("Value", info.value, inner_set );
+		else
+			widgets.addString("Value", info.value, inner_set );
+		widgets.addButtons(null,["Close"], function(v){
+			dialog.close();
+			return;
+		});
+
+		dialog.add( widgets );
+		dialog.adjustSize();
+		dialog.show();
+
+		function inner_set(v)
+		{
+			LS.GlobalScene.setPropertyValue( property, v );
+			LS.GlobalScene.refresh();
 		}
 	},
 
@@ -56,53 +176,197 @@ var AnimationModule = {
 		var locator = target.getLocator();
 		if(!locator)
 			return "";
-		return "<span title='Create keyframe' class='keyframe_icon' data-propertyname='" + property + "' data-propertyuid='" + locator + "/" + property + "' ></span>";
+		return "<span title='Create keyframe for "+property+"' class='keyframe_icon' data-propertyname='" + property + "' data-propertyuid='" + locator + "/" + property + "' ></span>";
 	},
 
-	insertKeyframe: function( info )
+	insertKeyframe: function( button, relative )
 	{
-		var take = this.timeline.current_take;
-		if(!take)
-		{
-			LiteGUI.alert("No track selected, create a new one using the animation editor.");
+		this.timeline.onInsertKeyframeButton( button, relative );
+		this.tab.click();
+	},
+
+	renderView: function(e, camera)
+	{
+		if( !EditorView.render_helpers || !this.render_helpers || RenderModule.render_settings.in_player || !RenderModule.frame_updated )
 			return;
-		}
 
-		//show dialog to select keyframe options (by uid or nodename)
-		//TODO
+		if(this.timeline.show_paths)
+			this.renderTrajectories(camera);
+	},
 
-		var locator = info.dataset["propertyuid"];
-		var name = info.dataset["propertyname"];
+	renderPicking: function(e, mouse_pos)
+	{
+		//cannot pick what is hidden
+		if(!EditorView.render_helpers || !this._trajectories.length )
+			return;
 
-		var info = LS.GlobalScene.getPropertyInfo( locator );
-		if(info === null)
-			return console.warn("Property info not found: " + locator );
+		var temp = vec3.create();
+		var callback = this.onTrajectoryKeyframeClicked.bind(this);
 
-		//quantize time
-		var time = Math.round( this.timeline.session.current_time * 30) / 30;
-
-		var size = 0;
-		var value = info.value;
-		var interpolation = LS.BEZIER;
-		if(info.value !== null)
+		for(var i = 0; i < this._trajectories.length; ++i)
 		{
-			if( info.value.constructor == Float32Array )
-				size = info.value.length;
-			else if( info.value.constructor === Number )
-				size = 1;
+			var traj = this._trajectories[i];
+
+			var info = LS.GlobalScene.getPropertyInfoFromPath( traj.track._property_path );
+			var parent_matrix = null;
+			if( info.node && info.node.parentNode && info.node.parentNode.transform )
+				parent_matrix = info.node.parentNode.transform.getGlobalMatrixRef();
+
+			var points = traj.points;
+			var num = points.length;
+			for(var j = 0; j < num; ++j)
+			{
+				var pos = points[j];
+				if( parent_matrix )
+					pos = vec3.transformMat4( vec3.create(), pos, parent_matrix );
+				EditorView.addPickingPoint( pos, 10, { pos: pos, value: points[j], type: "keyframe", traj:i, instance: this, take: this.timeline.current_take, track: traj.index, num: j, callback: callback } );
+			}
 		}
+	},
 
-		if(size == 0 || info.type == "enum")
-			interpolation = LS.NONE;
+	renderTrajectories: function( camera )
+	{
+		LS.Renderer.resetGLState();
 
-		var track = take.getTrack( locator );
+		if(!this.timeline.current_take)
+			return;
+
+		var take = this.timeline.current_take;
+		if(take.tracks.length == 0)
+			return;
+
+		var selection = SelectionModule.getSelection();
+		if(!selection || selection.type != "keyframe")
+			selection = null;
+
+		this._trajectories.length = 0;
+		var white = [1,1,1,1];
+		var colorA = [0.5,0.6,0.5,1];
+		var colorB = [1.0,1.0,0.5,1];
+
+		for(var i = 0; i < take.tracks.length; ++i)
+		{
+			var track = take.tracks[i];
+			if(track.type != "position" || !track.enabled)
+				continue;
+
+			var num = track.getNumberOfKeyframes();
+			var start = -1;
+			var end = -1;
+			var points = [];
+			var colors = null;
+			if( selection && selection.track == i )
+				colors = [];
+
+			var info = LS.GlobalScene.getPropertyInfoFromPath( track._property_path );
+			if(!info) //unknown case but it happened sometimes
+				continue;
+
+			var parent_node = null;
+			if( info.node && info.node.parentNode && info.node.parentNode.transform )
+			{
+				parent_node = info.node.parentNode;
+				LS.Draw.push();
+				LS.Draw.setMatrix( parent_node.transform.getGlobalMatrixRef() );
+			}
+
+			for(var j = 0; j < num; ++j)
+			{
+				var keyframe = track.getKeyframe(j);
+				if(!keyframe)
+					continue;
+				if(j == 0)
+					start = keyframe[0];
+				else if(j == num - 1)
+					end = keyframe[0];
+				var pos = keyframe[1];
+				points.push(pos);
+				if(colors)
+					colors.push( j == selection.index ? colorB : colorA );
+			}
+
+			LS.Draw.setColor( colors ? white : colorA );
+			LS.Draw.setPointSize( 4 );
+			LS.Draw.renderPoints( points, colors );
+			this._trajectories.push( { index: i, points: points, track: track } );
+
+			if(track.interpolation == LS.Animation.NONE)
+				continue;
+
+			if(track.interpolation == LS.Animation.LINEAR)
+			{
+				if(points.length > 1)
+					LS.Draw.renderLines( points, null, true );
+				continue;
+			}
+
+			points = [];
+
+			var last = null;
+			for(var j = 0; j < num; ++j)
+			{
+				var keyframe = track.getKeyframe(j);
+				if(!keyframe)
+					continue;
+				if(last)
+				{
+					var start_t = last[0];
+					var end_t = keyframe[0];
+					var num_samples = Math.max(2, (end_t - start_t) * 10);
+					var offset = (end_t - start_t) / num_samples;
+					for(var k = 0; k <= num_samples; ++k)
+					{
+						var t = start_t + offset * k;
+						var sample = track.getSample(t, true, vec3.create());
+						if(!sample)
+							continue;
+						points.push(sample);
+					}
+				}
+				last = keyframe;
+			}
+
+			if(points.length > 1)
+			{
+				LS.Draw.setColor(colorA);
+				LS.Draw.renderLines( points, null, false );
+			}
+
+			if( parent_node )
+				LS.Draw.pop();
+		}
+	},
+
+	onTrajectoryKeyframeClicked: function(info, e)
+	{
+		this.timeline.selectKeyframe( info.track, info.num );
+	},
+
+	getTransformMatrix: function( element, mat, selection )
+	{
+		if(!this._trajectories.length)
+			return false;
+
+		var T = mat || mat4.create();
+		mat4.setTranslation( T, selection.pos );
+		return T;
+	},
+
+	applyTransformMatrix: function( matrix, center, property_name, selection )
+	{
+		if(!this._trajectories.length)
+			return false;
+
+		var track = this._trajectories[ selection.traj ];
 		if(!track)
-			track = take.createTrack( { name: name, property: locator, type: info.type, value_size: size, interpolation: interpolation, duration: this.timeline.session.end_time, data: [] } );
+			return null;
 
-		console.log("Keyframe added");
-		track.addKeyframe( time , value );
-
-		this.timeline.redrawCanvas();
+		var point = track.points[ selection.num ];
+		vec3.transformMat4( point, point, matrix );
+		if(selection.pos != selection.value) //update the visual point
+			vec3.transformMat4( selection.pos, selection.pos, matrix );
+		this.timeline.applyTracks();
+		return true;
 	},
 
 	update: function(dt)
@@ -113,4 +377,4 @@ var AnimationModule = {
 
 };
 
-LiteGUI.registerModule( AnimationModule );
+CORE.registerModule( AnimationModule );

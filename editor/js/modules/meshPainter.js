@@ -14,10 +14,15 @@ var MeshPainter = {
 		bg_color: [0,0,0],
 	},
 
-	brushcolor: [1,1,1],
-	brushchannels: [1,1,1,1],
-	brushsize: 1,
-	brushalpha: 1.0,
+	brush: {
+		color: vec3.fromValues(1,1,1),
+		alpha: 1,
+		size: 1,
+		channels: [1,1,1,1],
+		spread: 0,
+		texture: null,
+		blending: false
+	},
 
 	pending_sprites: [],
 	pending_sprites3D: [],
@@ -27,6 +32,20 @@ var MeshPainter = {
 		LiteGUI.menubar.add("Actions/Paint mesh", { callback: function() { 
 			MeshPainter.showPaintingDialog();
 		}});
+
+		this.uniforms = {
+			u_model: mat4.create(),
+			u_vp: mat4.create(),
+			u_brushpos: vec3.create(),
+			u_brushpos2: vec3.create(),
+			u_brushsize: 1.0,
+			u_brushcolor: vec4.create(),
+			u_brushtexture: 0
+		}
+
+			LEvent.bind( LS.GlobalScene, "clear", function(){
+				MeshPainter.setPaintedNode(null);
+			});
 	},
 
 	setPaintedNode: function(node)
@@ -56,16 +75,35 @@ var MeshPainter = {
 		if(this.dialog)
 			this.dialog.close();
 
-		var dialog = new LiteGUI.Dialog("dialog_mesh_painter", {title:"Mesh Painter", parent:"#visor", close: true, minimize: true, width: 300, height: 440, scroll: false, draggable: true});
+		var dialog = new LiteGUI.Dialog( { title:"Mesh Painter", parent:"#visor", close: true, minimize: true, width: 300, height: 440, scroll: false, draggable: true});
 		dialog.show('fade');
 		dialog.setPosition(100,100);
 		this.dialog = dialog;
 
-		var widgets = new LiteGUI.Inspector("painting_widgets",{ name_width: "50%" });
+		var widgets = new LiteGUI.Inspector( { name_width: "50%" });
 		widgets.onchange = function()
 		{
 			RenderModule.requestFrame();
 		}
+
+		dialog.add( widgets );
+
+		this.inspect( widgets, dialog, on_refresh );
+
+
+		function on_refresh()
+		{
+			widgets.addSeparator();
+			widgets.addButton("", "Close" , { callback: function (value) { 
+				dialog.close(); 
+			}});
+			dialog.adjustSize();	
+		}
+	},
+
+	inspect: function( widgets, dialog, on_refresh )
+	{
+		widgets = widgets || InterfaceModule.inspector_widget.inspector;
 
 		inner_update();
 
@@ -87,6 +125,10 @@ var MeshPainter = {
 			}});
 
 			if(!MeshPainter.painted_node)
+				return;
+
+			/*
+			if(!MeshPainter.painted_node)
 			{
 				widgets.addButton("", "Close" , { callback: function (value) { 
 					dialog.close(); 
@@ -95,6 +137,7 @@ var MeshPainter = {
 				dialog.adjustSize();
 				return;
 			}
+			*/
 
 			var node = MeshPainter.painted_node;
 			var material = node.getMaterial();
@@ -102,18 +145,17 @@ var MeshPainter = {
 			//create material
 			if(!material)
 			{
-				var selected_material_class = LS.Material;
+				var selected_material_class = LS.MaterialClasses["StandardMaterial"];
 				widgets.addInfo(null,"Material not found in object");
-				widgets.addCombo("MaterialClasses", "Material", { values: LS.MaterialClasses, callback: function(material_class) { 
+				widgets.addCombo("MaterialClasses", selected_material_class, { values: LS.MaterialClasses, callback: function(material_class) { 
 					selected_material_class = material_class;
 				}});
 
 				widgets.addButton("No material", "Create Material", function(){
 					var mat = new selected_material_class();
-					node.setMaterial( mat );
+					node.material = mat;
 					inner_update();
 				});
-				dialog.adjustSize(10);
 				return;
 			}
 
@@ -156,11 +198,6 @@ var MeshPainter = {
 					MeshPainter.createTexture( node, MeshPainter.settings.channel );
 					inner_update();
 				}});
-				widgets.addSeparator();
-				widgets.addButton("", "Close" , { callback: function (value) { 
-					dialog.close(); 
-				}});
-				dialog.adjustSize();	
 				return;
 			}
 			else
@@ -187,20 +224,24 @@ var MeshPainter = {
 
 			//Brush info
 			widgets.addTitle("Brush");
-			widgets.addNumber("Size", MeshPainter.brushsize, { min:0.1, step: 0.1, callback: function(v) { 
-				MeshPainter.brushsize = v;
+			widgets.addNumber("Size", MeshPainter.brush.size, { min:0.1, step: 0.1, callback: function(v) { 
+				MeshPainter.brush.size = v;
 			}});
-			widgets.addSlider("Alpha", MeshPainter.brushalpha, { min:0.01, max: 1, callback: function(v) { 
-				MeshPainter.brushalpha = v;
+			//widgets.addNumber("Spread", MeshPainter.brush.spread, { min:0.1, step: 0.1, callback: function(v) { MeshPainter.brush.spread = v; }});
+			widgets.widgets_per_row = 2;
+			var widget_color = widgets.addColor("Color", MeshPainter.brush.color, { callback: function (value) { vec3.copy( MeshPainter.brush.color, value ); }});
+			widgets.addSlider("Alpha", MeshPainter.brush.alpha, { min:0.01, max: 1, callback: function(v) { 
+				MeshPainter.brush.alpha = v;
 			}});
-			var widget_color = widgets.addColor("Color", MeshPainter.brushcolor, { callback: function (value) { vec3.copy( MeshPainter.brushcolor, value ); }});
+			widgets.widgets_per_row = 1;
+			widgets.addCheckbox("Blending", MeshPainter.brush.blending, { callback: function(v) { MeshPainter.brush.blending = v; }});
 
 			widgets.widgets_per_row = 4;
-			widgets.addInfo("Mask",null,{width: 130} );
-			widgets.addCheckbox(null, MeshPainter.brushchannels[0], { label: "R", width: 40, callback: function (value) { MeshPainter.brushchannels[0] = value?1:0; }});
-			widgets.addCheckbox(null, MeshPainter.brushchannels[1], { label: "G", width: 40, callback: function (value) { MeshPainter.brushchannels[1] = value?1:0; }});
-			widgets.addCheckbox(null, MeshPainter.brushchannels[2], { label: "B", width: 40, callback: function (value) { MeshPainter.brushchannels[2] = value?1:0; }});
-			widgets.addCheckbox(null, MeshPainter.brushchannels[3], { label: "A", width: 40, callback: function (value) { MeshPainter.brushchannels[3] = value?1:0; }});
+			widgets.addInfo( "Mask", null, { width: 130 } );
+			widgets.addCheckbox( null, MeshPainter.brush.channels[0], { label: "R", width: 40, callback: function (value) { MeshPainter.brush.channels[0] = value?1:0; }});
+			widgets.addCheckbox( null, MeshPainter.brush.channels[1], { label: "G", width: 40, callback: function (value) { MeshPainter.brush.channels[1] = value?1:0; }});
+			widgets.addCheckbox( null, MeshPainter.brush.channels[2], { label: "B", width: 40, callback: function (value) { MeshPainter.brush.channels[2] = value?1:0; }});
+			widgets.addCheckbox( null, MeshPainter.brush.channels[3], { label: "A", width: 40, callback: function (value) { MeshPainter.brush.channels[3] = value?1:0; }});
 			widgets.widgets_per_row = 1;
 
 			widgets.addButton("Special color","Flat Normal", { callback: function (value) { 
@@ -208,19 +249,23 @@ var MeshPainter = {
 				//vec3.copy( MeshPainter.brushcolor, [0.5,0.5,1.0] ); 
 			}});
 
-			widgets.addSeparator();
-			widgets.addButton("", "Close" , { callback: function (value) { 
-				dialog.close(); 
+			widgets.addTitle("Actions");
+			widgets.widgets_per_row = 2;
+			var fill_color = [0,0,0];
+			widgets.addColor("Fill Color",fill_color, { callback: function(v){ fill_color = v; }});
+			widgets.addButton(null,"Fill", { callback: function(v){ 
+				if(!MeshPainter.current_texture)
+					return;
+				MeshPainter.current_texture.fill(fill_color);
+				LS.GlobalScene.requestFrame();
 			}});
-			dialog.adjustSize();	
+			widgets.widgets_per_row = 1;
+
+
+			if(on_refresh)
+				on_refresh();
 
 		}//inner update
-
-
-		$(dialog.content).append(widgets.root);
-		dialog.adjustSize();		
-
-		//widgets.addString("Name", last_file ? last_file.name : "");
 	},
 
 	cloneTextureInChannel: function()
@@ -275,8 +320,10 @@ var MeshPainter = {
 		EditorModule.refreshAttributes();
 	},
 
-	createTexture: function(node, channel, name)
+	createTexture: function( node, channel, name )
 	{
+		channel = channel || "color";
+
 		var tex_size = this.settings.tex_size || 512;
 		this.current_texture = new GL.Texture(tex_size,tex_size, { format: gl.RGB, magFilter: gl.LINEAR, minFilter: gl.LINEAR_MIPMAP_LINEAR });
 		var tex_name = name || "texture_" + (Math.random() * 1000).toFixed();
@@ -287,16 +334,16 @@ var MeshPainter = {
 		gl.texParameteri(this.current_texture.texture_type, gl.TEXTURE_MIN_FILTER, gl.LINEAR );
 		this.current_texture.unbind();
 
-		ResourcesManager.registerResource(tex_name, this.current_texture);
+		LS.ResourcesManager.registerResource( tex_name, this.current_texture);
 
 		var mat = node.getMaterial();
 		if(!mat)
 		{
-			mat = new Material();
+			mat = new LS.Material();
 			node.material = mat;
 		}
 
-		mat.setTexture(channel, tex_name);
+		mat.setTexture( channel, tex_name);
 		var bg_color = this.settings.bg_color || [1,1,1];
 		this.current_texture.drawTo( function() {
 			gl.clearColor(bg_color[0],bg_color[1],bg_color[2],1);
@@ -304,25 +351,26 @@ var MeshPainter = {
 		});
 
 		RenderModule.requestFrame();
-		EditorModule.inspectNode( node );
+		EditorModule.inspect( node );
 	},
 
 	//*********************
 	testRay: function(ray)
 	{
-		if(!this.painted_node || !this.collision_mesh || !this.collision_mesh.octree) return null;
+		if(!this.painted_node || !this.collision_mesh || !this.collision_mesh.octree)
+			return null;
 
 		var node = this.painted_node;
 
 		//compute ray
 		var model = node.transform.getGlobalMatrix();
 		var inv = mat4.invert( mat4.create(), model );
-		mat4.multiplyVec3(ray.start, inv, ray.start );
+		mat4.multiplyVec3(ray.origin, inv, ray.origin );
 		mat4.rotateVec3(ray.direction, inv, ray.direction );
 		vec3.normalize(ray.direction, ray.direction);
 
 		//test hit
-		var hit = this.collision_mesh.octree.testRay( ray.start, ray.direction, 0.0, 10000 );
+		var hit = this.collision_mesh.octree.testRay( ray.origin, ray.direction, 0.0, 10000 );
 		if(hit)
 		{
 			mat4.multiplyVec3(hit.pos, model, hit.pos);
@@ -341,9 +389,9 @@ var MeshPainter = {
 		var sprite = {
 			pos: pos,
 			normal: normal,
-			color: this.brushcolor,
-			alpha: this.brushalpha,
-			size: this.brushsize
+			color: vec3.clone( this.brush.color ),
+			alpha: this.brush.alpha,
+			size: this.brush.size
 		};
 
 		/*
@@ -359,7 +407,7 @@ var MeshPainter = {
 		}
 		*/
 
-		this.pending_sprites3D.push(sprite);
+		this.pending_sprites3D.push( sprite );
 	},
 
 	drawSprites3D: function()
@@ -370,15 +418,20 @@ var MeshPainter = {
 		gl.enable(gl.BLEND);
 		gl.disable(gl.DEPTH_TEST);
 		gl.disable(gl.CULL_FACE);
-		//gl.blendFunc( gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA );
-		gl.blendFuncSeparate( gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.SRC_ALPHA, gl.DST_ALPHA );
+
+		if(this.brush.blending)
+			gl.blendFuncSeparate( gl.SRC_ALPHA, gl.ONE, gl.SRC_ALPHA, gl.DST_ALPHA );
+		else
+			gl.blendFuncSeparate( gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.SRC_ALPHA, gl.DST_ALPHA );
 		gl.blendEquation( gl.FUNC_ADD, gl.MAX );
-		gl.colorMask( MeshPainter.brushchannels[0], MeshPainter.brushchannels[1], MeshPainter.brushchannels[2], MeshPainter.brushchannels[3]);
+
+		gl.colorMask( MeshPainter.brush.channels[0], MeshPainter.brush.channels[1], MeshPainter.brush.channels[2], MeshPainter.brush.channels[3]);
 
 		var camera = this.getCamera();
 
 		LS.Renderer.enableCamera( camera, null, true );
 		var mesh = this.painted_mesh;
+		var uniforms = MeshPainter.uniforms;
 
 		var shader_point = this._shader;
 		if(!shader_point)
@@ -391,17 +444,18 @@ var MeshPainter = {
 		var shader = null;
 		var model = this.getPaintedNode().transform.getGlobalMatrix();
 
+
 		for(var i in this.pending_sprites3D)
 		{
 			var sprite = this.pending_sprites3D[i];
 
-			var uniforms = {
-				u_model: model,
-				u_brushpos: sprite.pos,
-				u_brushpos2: sprite.pos2,
-				u_brushsize: sprite.size,
-				u_brushcolor: [sprite.color[0],sprite.color[1],sprite.color[2],sprite.alpha]
-			};
+			uniforms.u_model.set( model );
+			uniforms.u_brushpos.set( sprite.pos );
+			if(sprite.pos2)
+				uniforms.u_brushpos2.set( sprite.pos2 );
+			uniforms.u_brushsize = sprite.size;
+			uniforms.u_brushcolor.set( sprite.color );
+			uniforms.u_brushcolor[3] = sprite.alpha;
 
 			if(sprite.pos2)
 				shader = shader_line;
@@ -413,8 +467,11 @@ var MeshPainter = {
 		}
 
 		this.pending_sprites3D = [];
+
+		//restore state
 		gl.disable(gl.BLEND);
 		gl.blendFunc( gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA );
+		gl.blendFuncSeparate( gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ZERO );
 		gl.blendEquation( gl.FUNC_ADD, gl.FUNC_ADD );
 		gl.colorMask(1,1,1,1);
 	},
@@ -474,7 +531,44 @@ MeshPainter._paint_pixel_shader = "\n\
 	}\n\
 ";
 
-LiteGUI.registerModule( MeshPainter );
+MeshPainter._brush_vertex_shader = "\n\
+	precision highp float;\n\
+	\n\
+	attribute vec3 a_vertex;\n\
+	\n\
+	uniform mat4 u_model;\n\
+	uniform mat4 u_vp;\n\
+	varying vec3 v_pos;\n\
+	\n\
+	void main() {\n\
+		v_pos = (u_model * vec4(a_vertex,1.0)).xyz;\n\
+		gl_Position = u_vp * vec4(v_pos,1.0);\n\
+	}\n\
+	";
+
+MeshPainter._brush_pixel_shader = "\n\
+	precision highp float;\n\
+	\n\
+	varying vec3 v_pos;\n\
+	uniform vec3 u_brushpos;\n\
+	uniform float u_brushsize;\n\
+	uniform vec4 u_brushcolor;\n\
+	void main() {\n\
+		vec3 v = v_pos - u_brushpos;\n\
+		if( abs(v.x) > u_brushsize || abs(v.y) > u_brushsize)\n\
+			discard;\n\
+		\n\
+		float dist = length(v);\n\
+		if( dist > u_brushsize )\n\
+			discard;\n\
+		\n\
+		vec4 color = u_brushcolor;\n\
+		color.a *= 1.0 - (dist / u_brushsize);\n\
+		gl_FragColor = color;\n\
+	}\n\
+";
+
+CORE.registerModule( MeshPainter );
 
 var meshPainterTool = {
 	name: "painter",
@@ -511,31 +605,70 @@ var meshPainterTool = {
 
 	onClick: function()
 	{
-		MeshPainter.showPaintingDialog();
+		//MeshPainter.showPaintingDialog();
+		MeshPainter.inspect();
 	},
 
 	render: function()
 	{
-		if(!RenderModule.frame_updated) return;
-		if(!MeshPainter.current_texture) return;
+		if(!RenderModule.frame_updated || !MeshPainter.current_texture)
+			return;
 
 		var camera = MeshPainter.getCamera();
 
-		//Draw.setViewProjectionMatrix( Renderer._view_matrix, Renderer._projection_matrix, Renderer._viewprojection_matrix );
-		Draw.setCamera( camera );
+		//LS.Draw.setViewProjectionMatrix( Renderer._view_matrix, Renderer._projection_matrix, Renderer._viewprojection_matrix );
+		LS.Draw.setCamera( camera );
+		var uniforms = MeshPainter.uniforms;
+
+		MeshPainter.uniforms.u_vp.set( camera._viewprojection_matrix );
 
 		gl.disable( gl.BLEND );
 		gl.enable( gl.DEPTH_TEST );
+
 		if(MeshPainter.sphere_mesh && MeshPainter._mouse_over_the_mesh)
 		{
-			Draw.setColor(MeshPainter.brushcolor);
-			Draw.setAlpha(1);
-			Draw.push();
-			Draw.translate(MeshPainter.collision_pos);
-			Draw.scale([MeshPainter.brushsize, MeshPainter.brushsize, MeshPainter.brushsize]);
-			Draw.renderMesh( MeshPainter.sphere_mesh, gl.TRIANGLES );
-			Draw.pop();
+			var shader_brush = this._shader_brush;
+			if(!shader_brush)
+				shader_brush = this._shader_brush = new GL.Shader( MeshPainter._brush_vertex_shader, MeshPainter._brush_pixel_shader); 
+
+			var painted_node = MeshPainter.getPaintedNode();
+			if(!painted_node || !painted_node.transform)
+				return;
+
+			var model = painted_node.transform.getGlobalMatrix();
+
+			gl.enable( gl.BLEND );
+			gl.depthFunc( gl.LEQUAL );
+			gl.blendFunc( gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA );
+
+			uniforms.u_model.set( model );
+			uniforms.u_brushpos.set( MeshPainter.collision_pos );
+			uniforms.u_brushsize = MeshPainter.brush.size;
+			uniforms.u_brushcolor.set( MeshPainter.brush.color );
+			uniforms.u_brushcolor[3] = MeshPainter.brush.alpha * 3.0;
+
+			LS.Draw.push();
+			LS.Draw.setMatrix( model );
+			shader_brush.uniforms( uniforms );
+			LS.Draw.renderMesh( MeshPainter.painted_mesh, gl.TRIANGLES, shader_brush );
+			LS.Draw.pop();
+
+			gl.depthFunc( gl.LESS );
+
+			if(1) //render brush sphere
+			{
+				LS.Draw.setColor( MeshPainter.brush.color );
+				LS.Draw.setAlpha(0.1);
+				LS.Draw.push();
+				LS.Draw.translate( MeshPainter.collision_pos );
+				LS.Draw.scale( [MeshPainter.brush.size, MeshPainter.brush.size, MeshPainter.brush.size] );
+				LS.Draw.renderMesh( MeshPainter.sphere_mesh, gl.TRIANGLES );
+				LS.Draw.pop();
+			}
+			gl.disable( gl.BLEND );
 		}
+
+
 
 		if( MeshPainter.pending_sprites.length > 0 || MeshPainter.pending_sprites3D.length > 0 )
 		{
@@ -618,12 +751,17 @@ var meshPainterTool = {
 
 		//console.log(e);
 		if(e.wheelDelta > 0)
-			MeshPainter.brushsize *= 1.2;
+			MeshPainter.brush.size *= 1.2;
 		else
-			MeshPainter.brushsize *= 0.8;
+			MeshPainter.brush.size *= 0.8;
 
 		RenderModule.requestFrame();
 	},
+	
+	inspect: function( widgets, dialog )
+	{
+		return MeshPainter.inspect( widgets, dialog );
+	}
 };
 
-ToolsModule.registerTool(meshPainterTool);
+ToolsModule.registerTool( meshPainterTool );
